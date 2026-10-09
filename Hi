@@ -1,14 +1,9 @@
 --[[
 	Multi Tool - loader-style GUI
-	Features: Fly Mode, Magnet + Formation, Player ESP
+	Features: Fly Mode, Magnet + Formation, Player ESP, Object ESP
 
 	Usage:
 		loadstring(game:HttpGet("URL", true))()
-
-	Notes:
-	- Parts only follow the magnet if your client has network ownership of them
-	  (the script raises your simulation radius where the executor allows it).
-	- Roblox renders at most ~31 Highlights at once, so ESP is capped by the engine.
 ]]
 
 local Players = game:GetService("Players")
@@ -16,6 +11,7 @@ local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local CoreGui = game:GetService("CoreGui")
 local Workspace = game:GetService("Workspace")
+local HttpService = game:GetService("HttpService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -26,11 +22,29 @@ local CONFIG = {
 	Title = "Multi Tool",
 	GuiName = "MultiToolGui",
 
-	Fly = { Speed = 60, VerticalSpeed = 40, Effects = true },
-	Magnet = { PartCount = 150, Radius = 12, SpinSpeed = 5 },
+	Fly = {
+		Speed = 60,
+		VerticalSpeed = 40,
+		Effects = true,
+		Noclip = true,
+		SprintMultiplier = 1.8,
+		-- NEW: "camera" = Superman-style 3D flight along look vector
+		--      "plane"  = WASD always horizontal, Space/Ctrl for vertical (more stable)
+		MoveMode = "plane",
+	},
+	Magnet = {
+		PartCount = 150,
+		MaxCount = 500,          -- NEW: raised from 150
+		Radius = 12,
+		SpinSpeed = 5,
+		FarDistance = 80,
+		MaxPullSpeed = 900,
+		Unlimited = true,        -- NEW: continuous auto-grab while magnet is on
+		ScanInterval = 1.2,      -- NEW: seconds between background rescans
+	},
 	ESP = {
-		FillColor = "Red",       -- name from ColorPresets
-		OutlineColor = "White",  -- name from ColorPresets
+		FillColor = "Red",
+		OutlineColor = "White",
 		FillTransparency = 0.5,
 		OutlineTransparency = 0.4,
 		ShowNames = true,
@@ -39,8 +53,27 @@ local CONFIG = {
 		MaxObjects = 200,
 		Color = "Orange",
 		FillTransparency = 0.55,
-		ScanInterval = 1.5, -- seconds between rescans
+		ScanInterval = 1.5,
 	},
+
+	Hotkeys = {
+		fly = "F",
+		magnet = "G",
+		spin = "Z",
+		playerEsp = "H",
+		objectEsp = "J",
+		cycleFormation = "V",
+		toggleMenu = "RightShift",
+		toggleQuick = "K",
+	},
+
+	Quick = {
+		Enabled = true,
+		Locked = false,
+		Defaults = { "fly", "magnet", "playerEsp", "objectEsp" },
+	},
+
+	SaveFile = "MultiTool_config.json",
 }
 
 local ColorPresets = {
@@ -137,7 +170,6 @@ end
 
 local espFolder = new("Folder", { Name = "MultiToolESP", Parent = gui.Parent })
 
--- Root holds the shadow + main window (so the shadow follows while dragging)
 local root = new("Frame", {
 	Name = "Root",
 	Size = UDim2.fromOffset(340, 430),
@@ -172,7 +204,6 @@ local main = new("Frame", {
 corner(main, 10)
 new("UIStroke", { Color = Theme.Stroke, Thickness = 1, Parent = main })
 
--- Title bar
 local titleBar = new("Frame", {
 	Name = "TitleBar",
 	Size = UDim2.new(1, 0, 0, 38),
@@ -181,14 +212,14 @@ local titleBar = new("Frame", {
 	Parent = main,
 })
 corner(titleBar, 10)
-new("Frame", { -- square off the bottom corners of the title bar
+new("Frame", {
 	Position = UDim2.new(0, 0, 1, -10),
 	Size = UDim2.new(1, 0, 0, 10),
 	BackgroundColor3 = Theme.TitleBar,
 	BorderSizePixel = 0,
 	Parent = titleBar,
 })
-new("Frame", { -- accent line
+new("Frame", {
 	Position = UDim2.new(0, 0, 1, -2),
 	Size = UDim2.new(1, 0, 0, 2),
 	BackgroundColor3 = Theme.Accent,
@@ -198,7 +229,7 @@ new("Frame", { -- accent line
 new("TextLabel", {
 	Name = "Title",
 	Position = UDim2.fromOffset(14, 0),
-	Size = UDim2.new(1, -60, 1, -2),
+	Size = UDim2.new(1, -130, 1, -2),
 	BackgroundTransparency = 1,
 	Font = Enum.Font.GothamBold,
 	Text = CONFIG.Title,
@@ -208,27 +239,29 @@ new("TextLabel", {
 	Parent = titleBar,
 })
 
-local closeBtn = new("TextButton", {
-	Name = "Close",
-	Position = UDim2.new(1, -34, 0.5, -15),
-	Size = UDim2.fromOffset(28, 28),
-	BackgroundColor3 = Theme.Element,
-	AutoButtonColor = false,
-	Font = Enum.Font.GothamBold,
-	Text = "X",
-	TextColor3 = Theme.Text,
-	TextSize = 13,
-	Parent = titleBar,
-})
-corner(closeBtn, 6)
-closeBtn.MouseEnter:Connect(function()
-	closeBtn.BackgroundColor3 = Theme.Red
-end)
-closeBtn.MouseLeave:Connect(function()
-	closeBtn.BackgroundColor3 = Theme.Element
-end)
+local Win = { open = true, collapsed = false, pinned = false, onMoved = function() end }
 
--- Scrollable content
+local function makeTitleButton(name, text, rightOffset, width, textSize)
+	local btn = new("TextButton", {
+		Name = name,
+		Position = UDim2.new(1, -(rightOffset + width), 0.5, -15),
+		Size = UDim2.fromOffset(width, 28),
+		BackgroundColor3 = Theme.Element,
+		AutoButtonColor = false,
+		Font = Enum.Font.GothamBold,
+		Text = text,
+		TextColor3 = Theme.Text,
+		TextSize = textSize or 13,
+		Parent = titleBar,
+	})
+	corner(btn, 6)
+	return btn
+end
+
+local closeBtn = makeTitleButton("Close", "X", 6, 28)
+local collapseBtn = makeTitleButton("Collapse", "-", 38, 28, 16)
+local pinBtn = makeTitleButton("Pin", "PIN", 70, 38, 10)
+
 local content = new("ScrollingFrame", {
 	Name = "Content",
 	Position = UDim2.new(0, 8, 0, 46),
@@ -254,19 +287,21 @@ new("UIPadding", {
 	Parent = content,
 })
 
--- Dragging (mouse + touch) via title bar
 do
 	local dragging, dragStart, startPos = false, nil, nil
 
 	titleBar.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1
-			or input.UserInputType == Enum.UserInputType.Touch then
+		if (input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch) and not Win.pinned then
 			dragging = true
 			dragStart = input.Position
 			startPos = root.Position
 			input.Changed:Connect(function()
 				if input.UserInputState == Enum.UserInputState.End then
-					dragging = false
+					if dragging then
+						dragging = false
+						Win.onMoved()
+					end
 				end
 			end)
 		end
@@ -338,6 +373,15 @@ local function createToggle(text, default, callback)
 		callback(state)
 	end
 
+	function api.Visual(value)
+		state = value and true or false
+		render()
+	end
+
+	function api.Get()
+		return state
+	end
+
 	btn.MouseEnter:Connect(function()
 		hover = true
 		render()
@@ -360,11 +404,12 @@ local function createToggle(text, default, callback)
 	return api
 end
 
-local function createButton(text, callback)
+local function createButton(text, callback, baseColor)
+	baseColor = baseColor or Theme.Accent
 	local btn = new("TextButton", {
 		Name = "Button_" .. text,
 		Size = UDim2.new(1, 0, 0, 34),
-		BackgroundColor3 = Theme.Accent,
+		BackgroundColor3 = baseColor,
 		AutoButtonColor = false,
 		Font = Enum.Font.GothamBold,
 		Text = text,
@@ -376,10 +421,10 @@ local function createButton(text, callback)
 	corner(btn, 6)
 
 	btn.MouseEnter:Connect(function()
-		btn.BackgroundColor3 = lighten(Theme.Accent, 0.15)
+		btn.BackgroundColor3 = lighten(baseColor, 0.15)
 	end)
 	btn.MouseLeave:Connect(function()
-		btn.BackgroundColor3 = Theme.Accent
+		btn.BackgroundColor3 = baseColor
 	end)
 	btn.MouseButton1Click:Connect(callback)
 
@@ -451,7 +496,7 @@ local function createSlider(text, min, max, default, callback)
 	})
 	corner(knob, 7)
 
-	local hit = new("TextButton", { -- enlarged touch/click target
+	local hit = new("TextButton", {
 		Position = UDim2.new(0, 0, 0, -12),
 		Size = UDim2.new(1, 0, 1, 24),
 		BackgroundTransparency = 1,
@@ -500,7 +545,7 @@ local function createSlider(text, min, max, default, callback)
 		end)
 	end)
 
-	setValue(default, true) -- initial visual only; feature tables already hold the default
+	setValue(default, true)
 end
 
 ----------------------------------------------------------------------
@@ -516,8 +561,6 @@ local function getFxFolder()
 	return f
 end
 
--- Characters that must never be touched: mine + every LIVING player.
--- Dead players (ragdoll corpses) and NPCs are treated like any other object.
 local function buildExcluded()
 	local list = {}
 	if LocalPlayer.Character then
@@ -552,7 +595,6 @@ local function groundCast(origin, maxDist, ignore)
 	return Workspace:Raycast(origin, Vector3.new(0, -maxDist, 0), params)
 end
 
--- Expanding neon ring + dust burst (takeoff / landing)
 local function spawnShockwave(pos, maxRadius, color, duration)
 	local ring = new("Part", {
 		Anchored = true,
@@ -599,18 +641,39 @@ local function spawnShockwave(pos, maxRadius, color, duration)
 end
 
 ----------------------------------------------------------------------
--- FLY MODE (Superman-style)
+-- FLY MODE
 ----------------------------------------------------------------------
 local Fly = {
 	enabled = false,
-	state = "off", -- off | active | landing
+	state = "off",
 	speed = CONFIG.Fly.Speed,
 	vspeed = CONFIG.Fly.VerticalSpeed,
 	effects = CONFIG.Fly.Effects,
+	noclip = CONFIG.Fly.Noclip,
+	sprint = CONFIG.Fly.SprintMultiplier,
+	moveMode = CONFIG.Fly.MoveMode, -- NEW
 }
 
-local fly = {} -- runtime state, reset by stopFly()
-local ARM_JOINTS = { { "RightShoulder", 1 }, { "LeftShoulder", -1 } } -- R15 arms go overhead while diving forward
+local keysDown = {}
+track(UserInputService.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.Keyboard then
+		keysDown[input.KeyCode] = true
+	end
+end))
+track(UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.Keyboard then
+		keysDown[input.KeyCode] = nil
+	end
+end))
+track(UserInputService.WindowFocusReleased:Connect(function()
+	keysDown = {}
+end))
+local function keyDown(kc)
+	return keysDown[kc] == true or UserInputService:IsKeyDown(kc)
+end
+
+local fly = {}
+local ARM_JOINTS = { { "RightShoulder", 1 }, { "LeftShoulder", -1 } }
 local LINE_COUNT = 26
 
 local function stopTracks(hum)
@@ -639,6 +702,16 @@ local function stopFly()
 	for _, m in ipairs(fly.motors or {}) do
 		pcall(function()
 			m.motor.C0 = m.c0
+		end)
+	end
+	for _, p in ipairs(fly.parts or {}) do
+		if p.part.Parent then
+			p.part.CanCollide = p.cc
+		end
+	end
+	if fly.neck then
+		pcall(function()
+			fly.neck.motor.C0 = fly.neck.c0
 		end)
 	end
 	if fly.animate then
@@ -714,7 +787,7 @@ local function setupTrails(char, hrp)
 			addTrail(p, Vector3.new(0, -0.45, 0), Vector3.new(0, 0.45, 0), 0.45)
 		end
 	end
-	addTrail(hrp, Vector3.new(-1.4, 0.4, 0), Vector3.new(1.4, 0.4, 0), 0.7) -- wide wake behind the body
+	addTrail(hrp, Vector3.new(-1.4, 0.4, 0), Vector3.new(1.4, 0.4, 0), 0.7)
 	return list
 end
 
@@ -750,7 +823,7 @@ local function updateLines(dt, center, dirUnit, speed, f)
 	local up = math.abs(dirUnit.Y) > 0.95 and Vector3.xAxis or Vector3.yAxis
 	local frame = CFrame.lookAt(center, center + dirUnit, up)
 	for _, l in ipairs(fly.lines) do
-		l.z += dt * speed * 1.4 * l.spd -- local +Z is "behind" the flight direction
+		l.z += dt * speed * 1.4 * l.spd
 		if l.z > 50 then
 			l.z = -50
 		end
@@ -764,7 +837,7 @@ end
 local function flyStep(dt)
 	local hrp, hum, char = fly.hrp, fly.hum, fly.char
 	if not hrp or not hum or not hrp:IsDescendantOf(Workspace) or hum.Health <= 0 then
-		stopFly() -- Fly.enabled stays true, so respawn restarts flight
+		stopFly()
 		return
 	end
 
@@ -772,35 +845,73 @@ local function flyStep(dt)
 	local now = os.clock()
 	local landing = Fly.state == "landing"
 
-	-- Watchdog: re-create movers / re-assert state if a game script removes them
 	ensureMovers(hrp)
 	if not hum.PlatformStand then hum.PlatformStand = true end
 	if hum.AutoRotate then hum.AutoRotate = false end
+	if Fly.noclip then
+		for _, p in ipairs(fly.parts) do
+			if p.part.CanCollide then
+				p.part.CanCollide = false
+			end
+		end
+		fly.noclipOn = true
+	elseif fly.noclipOn then
+		fly.noclipOn = false
+		for _, p in ipairs(fly.parts) do
+			if p.part.Parent then
+				p.part.CanCollide = p.cc
+			end
+		end
+	end
 	if now - (fly.lastTrack or 0) > 0.4 then
 		fly.lastTrack = now
 		stopTracks(hum)
 	end
 
-	-- Input (relative to the camera)
+	-- ============================================================
+	-- FIX: robust movement with two modes
+	-- ============================================================
 	local cf = cam.CFrame
 	local look, right = cf.LookVector, cf.RightVector
+
+	-- Always compute a valid horizontal basis (failsafe when looking straight up/down)
+	local flatLook = Vector3.new(look.X, 0, look.Z)
+	flatLook = flatLook.Magnitude > 1e-4 and flatLook.Unit or Vector3.new(0, 0, -1)
+	local flatRight = Vector3.new(right.X, 0, right.Z)
+	flatRight = flatRight.Magnitude > 1e-4 and flatRight.Unit or Vector3.new(1, 0, 0)
+
+	local fwdRef, sideRef
+	if Fly.moveMode == "plane" then
+		fwdRef, sideRef = flatLook, flatRight
+	else
+		fwdRef, sideRef = look, right
+	end
+
 	local dir, vert = Vector3.zero, 0
+	local sprint = 1
 	if not landing and not UserInputService:GetFocusedTextBox() then
-		if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir += look end
-		if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir -= look end
-		if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir += right end
-		if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir -= right end
-		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then vert += Fly.vspeed end
-		if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then vert -= Fly.vspeed end
-	end
+		if keyDown(Enum.KeyCode.W) then dir += fwdRef end
+		if keyDown(Enum.KeyCode.S) then dir -= fwdRef end
+		if keyDown(Enum.KeyCode.D) then dir += sideRef end
+		if keyDown(Enum.KeyCode.A) then dir -= sideRef end
+		if keyDown(Enum.KeyCode.Space) or keyDown(Enum.KeyCode.E) then vert += Fly.vspeed end
+		if keyDown(Enum.KeyCode.LeftControl) or keyDown(Enum.KeyCode.Q) then vert -= Fly.vspeed end
+		if keyDown(Enum.KeyCode.LeftShift) then sprint = Fly.sprint end
 
-	local target = Vector3.zero
-	if dir.Magnitude > 0 then
-		target = dir.Unit * Fly.speed
+		-- touch / gamepad fallback
+		if dir.Magnitude < 1e-4 and (not UserInputService.KeyboardEnabled or UserInputService.GamepadEnabled) then
+			local md = hum.MoveDirection
+			if md.Magnitude > 0.05 then
+				dir = fwdRef * md:Dot(flatLook) + sideRef * md:Dot(flatRight)
+			end
+			if hum.Jump then vert += Fly.vspeed end
+		end
 	end
-	target += Vector3.new(0, vert, 0)
+	fly.maxSpeed = Fly.speed * sprint
 
-	-- Takeoff boost (eased rocket launch)
+	local target = (dir.Magnitude > 1 and dir.Unit or dir) * fly.maxSpeed
+	target += Vector3.new(0, vert * sprint, 0)
+
 	if fly.takeoff then
 		local k = (now - fly.t0) / 0.9
 		if k < 1 then
@@ -810,12 +921,10 @@ local function flyStep(dt)
 		end
 	end
 
-	-- Idle hover bob
 	if dir.Magnitude == 0 and vert == 0 and not landing then
 		target += Vector3.new(0, math.sin(now * 2) * 1.5, 0)
 	end
 
-	-- Landing: soft descent that slows down near the ground
 	local hit
 	if landing then
 		local ignore = { char, getFxFolder() }
@@ -834,34 +943,31 @@ local function flyStep(dt)
 		end
 	end
 
-	-- Smooth acceleration
 	fly.vel = fly.vel:Lerp(target, 1 - math.exp(-dt * (landing and 5 or 7)))
 	fly.bv.Velocity = fly.vel
+	hrp.AssemblyLinearVelocity = fly.vel
 
-	-- Orientation metrics
 	local flat = Vector3.new(look.X, 0, look.Z)
 	if flat.Magnitude > 1e-3 then
 		fly.flat = flat.Unit
 	end
-	local flatLook = fly.flat or Vector3.new(0, 0, -1)
-	local yaw = math.atan2(-flatLook.X, -flatLook.Z)
+	local flatLook2 = fly.flat or Vector3.new(0, 0, -1)
+	local yaw = math.atan2(-flatLook2.X, -flatLook2.Z)
 	local dyaw = (yaw - fly.lastYaw + math.pi) % (math.pi * 2) - math.pi
 	fly.lastYaw = yaw
 	local yawRate = dt > 0 and dyaw / dt or 0
 
 	local v = fly.vel
 	local speed = v.Magnitude
-	local s = math.clamp(speed / (Fly.speed * 0.85), 0, 1)
-	local fwd = v:Dot(flatLook)
+	local s = math.clamp(speed / (fly.maxSpeed * 0.85), 0, 1)
+	local fwd = v:Dot(flatLook2)
 	local strafe = v:Dot(Vector3.new(right.X, 0, right.Z))
 	local gate = math.clamp(s * 1.6, 0, 1)
 
-	-- Lean: body axis follows the velocity direction (horizontal = Superman pose, vertical = upright)
 	local leanTarget = 0
 	if speed > 3 and not landing then
 		leanTarget = math.clamp(math.atan2(fwd, v.Y), math.rad(-25), math.rad(105)) * gate
 	end
-	-- Bank: into turns (camera yaw rate) and strafing
 	local rollTarget = (math.clamp(yawRate * 0.18, -1, 1) * math.rad(40)
 		- math.clamp(strafe / Fly.speed, -1, 1) * math.rad(25)) * gate
 
@@ -872,12 +978,13 @@ local function flyStep(dt)
 
 	fly.bg.CFrame = CFrame.Angles(0, yaw, 0) * CFrame.Angles(0, 0, fly.roll) * CFrame.Angles(-fly.lean, 0, 0)
 
-	-- Arms stretch overhead as the body levels out
 	for _, m in ipairs(fly.motors) do
 		m.motor.C0 = m.c0 * CFrame.Angles(0, 0, m.sign * math.rad(165) * fly.poseW)
 	end
+	if fly.neck then
+		fly.neck.motor.C0 = fly.neck.c0 * CFrame.Angles(fly.lean * 0.75, 0, 0)
+	end
 
-	-- Visual effects
 	local f = math.clamp((speed - Fly.speed * 0.35) / (Fly.speed * 0.5), 0, 1)
 	local fxOn = Fly.effects
 
@@ -930,6 +1037,17 @@ local function startFly(takeoff)
 	end
 	stopTracks(hum)
 
+	fly.parts = {}
+	for _, d in ipairs(char:GetDescendants()) do
+		if d:IsA("BasePart") then
+			fly.parts[#fly.parts + 1] = { part = d, cc = d.CanCollide }
+		end
+	end
+	local neck = char:FindFirstChild("Neck", true)
+	if neck and neck:IsA("Motor6D") and neck.Parent and neck.Parent.Name == "Head" then
+		fly.neck = { motor = neck, c0 = neck.C0 }
+	end
+
 	fly.motors = {}
 	for _, j in ipairs(ARM_JOINTS) do
 		local m = char:FindFirstChild(j[1], true)
@@ -968,7 +1086,7 @@ local function setFly(on)
 	if on then
 		Fly.enabled = true
 		if Fly.state == "landing" then
-			Fly.state = "active" -- cancel the landing and keep flying
+			Fly.state = "active"
 		elseif Fly.state == "off" then
 			startFly(true)
 		end
@@ -983,7 +1101,6 @@ local function setFly(on)
 	end
 end
 
--- Re-apply flight after respawn
 track(LocalPlayer.CharacterAdded:Connect(function(char)
 	if Fly.enabled then
 		char:WaitForChild("HumanoidRootPart", 10)
@@ -995,7 +1112,7 @@ track(LocalPlayer.CharacterAdded:Connect(function(char)
 end))
 
 ----------------------------------------------------------------------
--- MAGNET + FORMATION (works on whole assemblies, so ragdolls/models move as one)
+-- MAGNET + FORMATION
 ----------------------------------------------------------------------
 local Magnet = {
 	enabled = false,
@@ -1007,8 +1124,8 @@ local Magnet = {
 	spinSpeed = CONFIG.Magnet.SpinSpeed,
 	dirty = false,
 }
-local captured = {}    -- array of { root, bp, bg, parts = { {part, cc} } }
-local capturedSet = {} -- [rootPart] = entry
+local captured = {}
+local capturedSet = {}
 local magnetConn
 local spinAngle, lastScan, lastSim = 0, 0, 0
 
@@ -1034,13 +1151,13 @@ local function formationOffset(shape, i, n, r, rot)
 		local a = (i / n) * math.pi * 2
 		v = Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
 
-	elseif shape == "Sphere" then -- Fibonacci sphere
+	elseif shape == "Sphere" then
 		local y = 1 - 2 * (i - 0.5) / n
 		local rad = math.sqrt(math.max(0, 1 - y * y))
 		local theta = i * 2.399963229728653
 		v = Vector3.new(math.cos(theta) * rad, y, math.sin(theta) * rad) * r
 
-	elseif shape == "Cube" then -- points spread over the 6 faces
+	elseif shape == "Cube" then
 		local idx = i - 1
 		local face = idx % 6
 		local j = math.floor(idx / 6)
@@ -1055,13 +1172,13 @@ local function formationOffset(shape, i, n, r, rot)
 		else v = Vector3.new(u, w, -1) end
 		v = v * r
 
-	else -- Helix
+	else
 		local f = n > 1 and (i - 1) / (n - 1) or 0.5
 		local a = f * math.pi * 2 * 3
 		v = Vector3.new(math.cos(a) * r, (f * 2 - 1) * r, math.sin(a) * r)
 	end
 
-	return CFrame.Angles(0, rot, 0) * v -- slow orbit around the player
+	return CFrame.Angles(0, rot, 0) * v
 end
 
 local function release(entry)
@@ -1080,7 +1197,7 @@ local function capture(root)
 
 	local bp = new("BodyPosition", {
 		Name = "MT_BP",
-		MaxForce = Vector3.one * mass * 2000, -- ~10g worth of force, scales with the assembly
+		MaxForce = Vector3.one * mass * 2000,
 		P = mass * 400,
 		D = mass * 45,
 		Position = root.Position,
@@ -1095,7 +1212,6 @@ local function capture(root)
 		Parent = root,
 	})
 
-	-- Noclip the whole assembly while it is held so walls/props can't block it
 	local parts = {}
 	local ok, connected = pcall(function()
 		return root:GetConnectedParts(true)
@@ -1107,13 +1223,12 @@ local function capture(root)
 		end
 	end
 
-	local entry = { root = root, bp = bp, bg = bg, parts = parts }
+	local entry = { root = root, bp = bp, bg = bg, parts = parts, maxForce = bp.MaxForce, far = false }
 	capturedSet[root] = entry
 	return entry
 end
 
 local function refreshCaptures()
-	-- 1) prune dead / anchored / stripped entries
 	local alive = {}
 	for _, e in ipairs(captured) do
 		local r = e.root
@@ -1125,12 +1240,10 @@ local function refreshCaptures()
 	end
 	captured = alive
 
-	-- 2) trim extras
 	while #captured > Magnet.count do
 		release(table.remove(captured))
 	end
 
-	-- 3) fill up with the nearest free assemblies (blocks, ragdolls, NPCs, vehicles, ...)
 	if #captured < Magnet.count then
 		local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 		if not hrp then
@@ -1172,7 +1285,10 @@ local function magnetStep(dt)
 		lastSim = now
 		claimSimulation()
 	end
-	if (Magnet.dirty and now - lastScan > 0.25) or (#captured < Magnet.count and now - lastScan > 3) then
+
+	-- FIX: aggressive rescans so newly spawned / newly streamed-in parts get pulled in
+	local wantScan = Magnet.dirty or CONFIG.Magnet.Unlimited or #captured < Magnet.count
+	if wantScan and now - lastScan > (Magnet.dirty and 0.25 or CONFIG.Magnet.ScanInterval) then
 		Magnet.dirty = false
 		lastScan = now
 		refreshCaptures()
@@ -1189,7 +1305,20 @@ local function magnetStep(dt)
 	for i, e in ipairs(captured) do
 		local r = e.root
 		if r.Parent and e.bp.Parent == r and e.bg.Parent == r then
-			e.bp.Position = center + formationOffset(shape, i, n, Magnet.radius, rot)
+			local goal = center + formationOffset(shape, i, n, Magnet.radius, rot)
+			local delta = goal - r.Position
+			local dist = delta.Magnitude
+			local farLimit = CONFIG.Magnet.FarDistance
+			if dist > farLimit or (e.far and dist > farLimit * 0.75) then
+				-- No range limit: pull straight at max speed from any distance
+				e.far = true
+				e.bp.MaxForce = Vector3.zero
+				r.AssemblyLinearVelocity = delta.Unit * math.clamp(dist * 3, 150, CONFIG.Magnet.MaxPullSpeed)
+			elseif e.far then
+				e.far = false
+				e.bp.MaxForce = e.maxForce
+			end
+			e.bp.Position = goal
 			if Magnet.spin then
 				e.bg.CFrame = CFrame.Angles(0, spinAngle + i * 0.5, 0)
 			else
@@ -1225,7 +1354,7 @@ local function setMagnet(on)
 		lastScan = 0
 		magnetConn = RunService.Heartbeat:Connect(magnetStep)
 	else
-		releaseAll() -- BodyPosition/BodyGyro destroyed, parts fall back
+		releaseAll()
 	end
 end
 
@@ -1239,8 +1368,8 @@ local ESP = {
 	outlineIndex = presetIndex(CONFIG.ESP.OutlineColor),
 	fillTransparency = CONFIG.ESP.FillTransparency,
 	outlineTransparency = CONFIG.ESP.OutlineTransparency,
-	objects = {},   -- [player] = { highlight, billboard, died }
-	hooks = {},     -- [player] = { connections }
+	objects = {},
+	hooks = {},
 }
 
 local function clearESP(plr)
@@ -1270,7 +1399,6 @@ local function applyESP(plr)
 	task.spawn(function()
 		local hum = char:WaitForChild("Humanoid", 10)
 		local head = char:WaitForChild("Head", 10)
-		-- bail if state changed while waiting (toggled off, respawned, left, ...)
 		if ESP.objects[plr] ~= entry or plr.Character ~= char or not hum or hum.Health <= 0 then
 			return
 		end
@@ -1380,14 +1508,14 @@ local function setESP(on)
 end
 
 ----------------------------------------------------------------------
--- OBJECT ESP (every unanchored / movable object, visible through walls)
+-- OBJECT ESP
 ----------------------------------------------------------------------
 local ObjESP = {
 	enabled = false,
 	max = CONFIG.ObjectESP.MaxObjects,
 	colorIndex = presetIndex(CONFIG.ObjectESP.Color),
 	fillTransparency = CONFIG.ObjectESP.FillTransparency,
-	objects = {}, -- [part] = { box, sel }
+	objects = {},
 	last = 0,
 }
 local objFolder = new("Folder", { Name = "MultiToolObjESP", Parent = gui.Parent })
@@ -1407,7 +1535,7 @@ local function addObj(part)
 	ObjESP.objects[part] = {
 		box = new("BoxHandleAdornment", {
 			Adornee = part,
-			AlwaysOnTop = true, -- visible through walls
+			AlwaysOnTop = true,
 			ZIndex = 5,
 			Size = part.Size + Vector3.new(0.05, 0.05, 0.05),
 			Color3 = color,
@@ -1490,9 +1618,143 @@ local function setObjectESP(on)
 end
 
 ----------------------------------------------------------------------
--- Cleanup / close
+-- Settings persistence
+----------------------------------------------------------------------
+local Settings = {
+	hotkeys = {},
+	quickVisible = {},
+	quickPos = {},
+	quickEnabled = CONFIG.Quick.Enabled,
+	quickLocked = CONFIG.Quick.Locked,
+	launcherPos = nil,
+	window = nil,
+	flyMoveMode = CONFIG.Fly.MoveMode, -- NEW: persisted
+	magnetUnlimited = CONFIG.Magnet.Unlimited, -- NEW
+}
+
+local function fileApi()
+	return type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function"
+end
+
+local function udimToTable(u)
+	return { u.X.Scale, u.X.Offset, u.Y.Scale, u.Y.Offset }
+end
+
+local function validPos(t)
+	return type(t) == "table" and type(t[1]) == "number" and type(t[2]) == "number"
+		and type(t[3]) == "number" and type(t[4]) == "number"
+end
+
+local function tableToUDim(t)
+	return UDim2.new(t[1], t[2], t[3], t[4])
+end
+
+local function loadSettings()
+	if not fileApi() then
+		return
+	end
+	local ok, data = pcall(function()
+		if isfile(CONFIG.SaveFile) then
+			return HttpService:JSONDecode(readfile(CONFIG.SaveFile))
+		end
+	end)
+	if not ok or type(data) ~= "table" then
+		return
+	end
+
+	if type(data.hotkeys) == "table" then
+		for id, name in pairs(data.hotkeys) do
+			if name == "" then
+				Settings.hotkeys[id] = false
+			else
+				local okk, kc = pcall(function()
+					return Enum.KeyCode[name]
+				end)
+				if okk and kc then
+					Settings.hotkeys[id] = kc
+				end
+			end
+		end
+	end
+	if type(data.quickVisible) == "table" then
+		for id, v in pairs(data.quickVisible) do
+			Settings.quickVisible[id] = v and true or false
+		end
+	end
+	if type(data.quickPos) == "table" then
+		for id, t in pairs(data.quickPos) do
+			if validPos(t) then
+				Settings.quickPos[id] = t
+			end
+		end
+	end
+	if type(data.quickEnabled) == "boolean" then Settings.quickEnabled = data.quickEnabled end
+	if type(data.quickLocked) == "boolean" then Settings.quickLocked = data.quickLocked end
+	if validPos(data.launcherPos) then Settings.launcherPos = data.launcherPos end
+	if type(data.window) == "table" and validPos(data.window.pos) then
+		Settings.window = data.window
+	end
+	if data.flyMoveMode == "camera" or data.flyMoveMode == "plane" then
+		Settings.flyMoveMode = data.flyMoveMode
+	end
+	if type(data.magnetUnlimited) == "boolean" then
+		Settings.magnetUnlimited = data.magnetUnlimited
+	end
+end
+
+loadSettings()
+for _, id in ipairs(CONFIG.Quick.Defaults) do
+	if Settings.quickVisible[id] == nil then
+		Settings.quickVisible[id] = true
+	end
+end
+
+-- Apply loaded settings to runtime
+Fly.moveMode = Settings.flyMoveMode
+CONFIG.Magnet.Unlimited = Settings.magnetUnlimited
+
+local function saveSettings()
+	if not fileApi() then
+		return
+	end
+	local hk = {}
+	for id, v in pairs(Settings.hotkeys) do
+		hk[id] = v and v.Name or ""
+	end
+	local data = {
+		hotkeys = hk,
+		quickVisible = Settings.quickVisible,
+		quickPos = Settings.quickPos,
+		quickEnabled = Settings.quickEnabled,
+		quickLocked = Settings.quickLocked,
+		launcherPos = Settings.launcherPos,
+		window = { pos = udimToTable(root.Position), collapsed = Win.collapsed, pinned = Win.pinned },
+		flyMoveMode = Fly.moveMode,
+		magnetUnlimited = CONFIG.Magnet.Unlimited,
+	}
+	pcall(function()
+		writefile(CONFIG.SaveFile, HttpService:JSONEncode(data))
+	end)
+end
+
+local saveToken = 0
+local function saveSoon()
+	saveToken += 1
+	local mine = saveToken
+	task.delay(0.6, function()
+		if mine == saveToken then
+			saveSettings()
+		end
+	end)
+end
+Win.onMoved = saveSoon
+
+----------------------------------------------------------------------
+-- Cleanup
 ----------------------------------------------------------------------
 local function cleanup()
+	pcall(saveSettings)
+
 	Fly.enabled = false
 	stopFly()
 	setMagnet(false)
@@ -1521,11 +1783,565 @@ local function cleanup()
 end
 
 env.__MultiToolCleanup = cleanup
-closeBtn.MouseButton1Click:Connect(cleanup)
 
 ----------------------------------------------------------------------
--- Build the UI
+-- Drag helper
 ----------------------------------------------------------------------
+local function makeDraggable(obj, onClick, canDrag, onMoved)
+	local pressed, moved, startMouse, startPos = false, false, nil, nil
+
+	obj.InputBegan:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseButton1
+			and input.UserInputType ~= Enum.UserInputType.Touch then
+			return
+		end
+		pressed, moved = true, false
+		startMouse, startPos = input.Position, obj.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End and pressed then
+				pressed = false
+				if moved then
+					onMoved()
+				elseif onClick then
+					onClick()
+				end
+			end
+		end)
+	end)
+
+	track(UserInputService.InputChanged:Connect(function(input)
+		if pressed and (input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch) then
+			local d = input.Position - startMouse
+			if not moved and d.Magnitude > 5 and canDrag() then
+				moved = true
+			end
+			if moved then
+				obj.Position = UDim2.new(
+					startPos.X.Scale, startPos.X.Offset + d.X,
+					startPos.Y.Scale, startPos.Y.Offset + d.Y
+				)
+			end
+		end
+	end))
+end
+
+----------------------------------------------------------------------
+-- Window controls: pin / collapse / close (+ launcher icon)
+----------------------------------------------------------------------
+local WIN_W, WIN_H, BAR_H = 340, 430, 38
+
+local launcher = new("TextButton", {
+	Name = "Launcher",
+	Size = UDim2.fromOffset(44, 44),
+	Position = Settings.launcherPos and tableToUDim(Settings.launcherPos) or UDim2.new(0, 16, 0.5, -22),
+	BackgroundColor3 = Theme.Accent,
+	AutoButtonColor = false,
+	Font = Enum.Font.GothamBold,
+	Text = "MT",
+	TextColor3 = Theme.Text,
+	TextSize = 14,
+	Visible = false,
+	ZIndex = 5,
+	Parent = gui,
+})
+corner(launcher, 22)
+new("UIStroke", { Color = Color3.new(1, 1, 1), Thickness = 1, Transparency = 0.7, Parent = launcher })
+launcher.MouseEnter:Connect(function()
+	launcher.BackgroundColor3 = lighten(Theme.Accent, 0.15)
+end)
+launcher.MouseLeave:Connect(function()
+	launcher.BackgroundColor3 = Theme.Accent
+end)
+
+local pinHover, collapseHover, closeHover = false, false, false
+local function renderTitleButtons()
+	if Win.pinned then
+		pinBtn.BackgroundColor3 = pinHover and lighten(Theme.Accent) or Theme.Accent
+	else
+		pinBtn.BackgroundColor3 = pinHover and Theme.Track or Theme.Element
+	end
+	collapseBtn.BackgroundColor3 = collapseHover and Theme.Track or Theme.Element
+	closeBtn.BackgroundColor3 = closeHover and Theme.Red or Theme.Element
+	closeBtn.TextTransparency = Win.pinned and 0.6 or 0
+end
+
+local function flashPin()
+	pinBtn.BackgroundColor3 = Theme.Red
+	task.delay(0.25, renderTitleButtons)
+end
+
+local function tweenWindowSize(toSize, duration, onDone)
+	local from = root.Size
+	local t0 = os.clock()
+	Win.tweenId = (Win.tweenId or 0) + 1
+	local id = Win.tweenId
+	task.spawn(function()
+		while id == Win.tweenId do
+			local a = math.min((os.clock() - t0) / duration, 1)
+			local e = 1 - (1 - a) ^ 3
+			root.Size = UDim2.fromOffset(
+				from.X.Offset + (toSize.X.Offset - from.X.Offset) * e,
+				from.Y.Offset + (toSize.Y.Offset - from.Y.Offset) * e
+			)
+			if a >= 1 then
+				break
+			end
+			RunService.RenderStepped:Wait()
+		end
+		if id == Win.tweenId and onDone then
+			onDone()
+		end
+	end)
+end
+
+local function setCollapsed(c, instant)
+	Win.collapsed = c
+	collapseBtn.Text = c and "+" or "-"
+	if c then
+		content.Visible = false
+		if instant then
+			Win.tweenId = (Win.tweenId or 0) + 1
+			root.Size = UDim2.fromOffset(WIN_W, BAR_H)
+		else
+			tweenWindowSize(UDim2.fromOffset(WIN_W, BAR_H), 0.18)
+		end
+	else
+		if instant then
+			Win.tweenId = (Win.tweenId or 0) + 1
+			root.Size = UDim2.fromOffset(WIN_W, WIN_H)
+			content.Visible = true
+		else
+			tweenWindowSize(UDim2.fromOffset(WIN_W, WIN_H), 0.18, function()
+				content.Visible = true
+			end)
+		end
+	end
+	saveSoon()
+end
+
+local function setPinned(p)
+	Win.pinned = p
+	gui.DisplayOrder = p and 2147483647 or 999
+	renderTitleButtons()
+	saveSoon()
+end
+
+local function setOpen(open)
+	if not open and Win.pinned then
+		flashPin()
+		return
+	end
+	Win.open = open
+	root.Visible = open
+	launcher.Visible = not open
+end
+
+local function toggleMenu()
+	setOpen(not Win.open)
+end
+
+pinBtn.MouseEnter:Connect(function() pinHover = true renderTitleButtons() end)
+pinBtn.MouseLeave:Connect(function() pinHover = false renderTitleButtons() end)
+collapseBtn.MouseEnter:Connect(function() collapseHover = true renderTitleButtons() end)
+collapseBtn.MouseLeave:Connect(function() collapseHover = false renderTitleButtons() end)
+closeBtn.MouseEnter:Connect(function() closeHover = true renderTitleButtons() end)
+closeBtn.MouseLeave:Connect(function() closeHover = false renderTitleButtons() end)
+
+pinBtn.MouseButton1Click:Connect(function()
+	setPinned(not Win.pinned)
+end)
+collapseBtn.MouseButton1Click:Connect(function()
+	setCollapsed(not Win.collapsed)
+end)
+closeBtn.MouseButton1Click:Connect(function()
+	setOpen(false)
+end)
+renderTitleButtons()
+
+makeDraggable(launcher, function()
+	setOpen(true)
+end, function()
+	return true
+end, function()
+	Settings.launcherPos = udimToTable(launcher.Position)
+	saveSoon()
+end)
+
+----------------------------------------------------------------------
+-- Quick-button state helpers
+----------------------------------------------------------------------
+local quickButtons = {}
+local quickMasterApi
+
+local function updateQuickVisibility()
+	for id, q in pairs(quickButtons) do
+		q.btn.Visible = Settings.quickEnabled and Settings.quickVisible[id] == true
+	end
+end
+
+local function setQuickEnabled(on)
+	Settings.quickEnabled = on
+	updateQuickVisibility()
+	if quickMasterApi then
+		quickMasterApi.Visual(on)
+	end
+	saveSoon()
+end
+
+local function toggleQuickButtons()
+	setQuickEnabled(not Settings.quickEnabled)
+end
+
+local formationBtn
+local function cycleFormation()
+	Magnet.shape = Magnet.shape % #Magnet.shapes + 1
+	if formationBtn then
+		formationBtn.SetText("Formation: " .. Magnet.shapes[Magnet.shape])
+	end
+end
+
+----------------------------------------------------------------------
+-- Action registry
+----------------------------------------------------------------------
+local Actions, ActionOrder = {}, {}
+
+local function registerAction(id, def)
+	def.id = id
+	def.visuals = {}
+	Actions[id] = def
+	ActionOrder[#ActionOrder + 1] = id
+end
+
+registerAction("fly", {
+	label = "Fly", short = "Fly", kind = "toggle",
+	get = function() return Fly.enabled end,
+	set = setFly,
+})
+registerAction("magnet", {
+	label = "Magnet", short = "Magnet", kind = "toggle",
+	get = function() return Magnet.enabled end,
+	set = setMagnet,
+})
+registerAction("spin", {
+	label = "Spin", short = "Spin", kind = "toggle",
+	get = function() return Magnet.spin end,
+	set = function(on) Magnet.spin = on end,
+})
+registerAction("playerEsp", {
+	label = "Player ESP", short = "Players", kind = "toggle",
+	get = function() return ESP.enabled end,
+	set = setESP,
+})
+registerAction("objectEsp", {
+	label = "Object ESP", short = "Objects", kind = "toggle",
+	get = function() return ObjESP.enabled end,
+	set = setObjectESP,
+})
+registerAction("cycleFormation", { label = "Cycle Formation", kind = "trigger", run = cycleFormation })
+registerAction("toggleMenu", { label = "Show / Hide Menu", kind = "trigger", run = toggleMenu })
+registerAction("toggleQuick", { label = "Show / Hide Quick Buttons", kind = "trigger", run = toggleQuickButtons })
+
+local function syncAction(id)
+	local a = Actions[id]
+	if a.kind ~= "toggle" then
+		return
+	end
+	local on = a.get() and true or false
+	for _, fn in ipairs(a.visuals) do
+		fn(on)
+	end
+end
+
+local function setAction(id, on)
+	Actions[id].set(on)
+	syncAction(id)
+end
+
+local function toggleAction(id)
+	local a = Actions[id]
+	if a.kind == "toggle" then
+		setAction(id, not a.get())
+	else
+		a.run()
+	end
+end
+
+----------------------------------------------------------------------
+-- Hotkeys
+----------------------------------------------------------------------
+local hotkeys = {}
+for id, name in pairs(CONFIG.Hotkeys) do
+	local okk, kc = pcall(function()
+		return Enum.KeyCode[name]
+	end)
+	if okk and kc then
+		hotkeys[id] = kc
+	end
+end
+for id, v in pairs(Settings.hotkeys) do
+	hotkeys[id] = v or nil
+end
+
+local RESERVED = {
+	[Enum.KeyCode.W] = true, [Enum.KeyCode.A] = true, [Enum.KeyCode.S] = true, [Enum.KeyCode.D] = true,
+	[Enum.KeyCode.E] = true, [Enum.KeyCode.Q] = true, [Enum.KeyCode.Space] = true,
+	[Enum.KeyCode.LeftControl] = true, [Enum.KeyCode.LeftShift] = true,
+}
+
+local listening
+local bindRows = {}
+
+local function keyText(id)
+	local k = hotkeys[id]
+	return k and k.Name or "None"
+end
+
+local function refreshBind(id)
+	local r = bindRows[id]
+	if r then
+		local waiting = listening == id
+		r.keyBtn.Text = waiting and "Press key..." or keyText(id)
+		r.keyBtn.BackgroundColor3 = waiting and Theme.Accent or Theme.Track
+	end
+	local q = quickButtons[id]
+	if q then
+		q.keyLbl.Text = hotkeys[id] and ("[" .. keyText(id) .. "]") or ""
+	end
+end
+
+local function refreshAllBinds()
+	for id in pairs(Actions) do
+		refreshBind(id)
+	end
+end
+
+track(UserInputService.InputBegan:Connect(function(input)
+	if input.UserInputType ~= Enum.UserInputType.Keyboard then
+		return
+	end
+	local kc = input.KeyCode
+
+	if listening then
+		local id = listening
+		listening = nil
+		if kc == Enum.KeyCode.Escape then
+			refreshAllBinds()
+		elseif kc == Enum.KeyCode.Backspace or kc == Enum.KeyCode.Delete then
+			hotkeys[id] = nil
+			Settings.hotkeys[id] = false
+			refreshAllBinds()
+			saveSoon()
+		elseif RESERVED[kc] then
+			refreshAllBinds()
+			local r = bindRows[id]
+			if r then
+				r.keyBtn.Text = "Reserved"
+				task.delay(1, function()
+					refreshBind(id)
+				end)
+			end
+		elseif kc ~= Enum.KeyCode.Unknown then
+			for other, k in pairs(hotkeys) do
+				if k == kc and other ~= id then
+					hotkeys[other] = nil
+					Settings.hotkeys[other] = false
+				end
+			end
+			hotkeys[id] = kc
+			Settings.hotkeys[id] = kc
+			refreshAllBinds()
+			saveSoon()
+		end
+		return
+	end
+
+	if UserInputService:GetFocusedTextBox() then
+		return
+	end
+	for _, id in ipairs(ActionOrder) do
+		if hotkeys[id] == kc then
+			toggleAction(id)
+			break
+		end
+	end
+end))
+
+----------------------------------------------------------------------
+-- Quick buttons
+----------------------------------------------------------------------
+local QUICK_W, QUICK_H = 76, 40
+
+local toggleIds = {}
+for _, id in ipairs(ActionOrder) do
+	if Actions[id].kind == "toggle" then
+		toggleIds[#toggleIds + 1] = id
+	end
+end
+
+local function quickDefaultPos(index)
+	local total = #toggleIds
+	local gap = 6
+	local totalW = total * QUICK_W + (total - 1) * gap
+	return UDim2.new(0.5, -totalW / 2 + (index - 1) * (QUICK_W + gap), 1, -76)
+end
+
+for index, id in ipairs(toggleIds) do
+	local a = Actions[id]
+	local btn = new("TextButton", {
+		Name = "Quick_" .. id,
+		Size = UDim2.fromOffset(QUICK_W, QUICK_H),
+		Position = Settings.quickPos[id] and tableToUDim(Settings.quickPos[id]) or quickDefaultPos(index),
+		BackgroundColor3 = Theme.Element,
+		AutoButtonColor = false,
+		Text = "",
+		Visible = false,
+		ZIndex = 5,
+		Parent = gui,
+	})
+	corner(btn, 8)
+	local stroke = new("UIStroke", { Color = Theme.Accent, Thickness = 1.2, Parent = btn })
+	new("TextLabel", {
+		Position = UDim2.fromOffset(0, 4),
+		Size = UDim2.new(1, 0, 0, 18),
+		BackgroundTransparency = 1,
+		Font = Enum.Font.GothamBold,
+		Text = a.short or a.label,
+		TextColor3 = Theme.Text,
+		TextSize = 12,
+		Parent = btn,
+	})
+	local keyLbl = new("TextLabel", {
+		Position = UDim2.fromOffset(0, 22),
+		Size = UDim2.new(1, 0, 0, 14),
+		BackgroundTransparency = 1,
+		Font = Enum.Font.Gotham,
+		Text = "",
+		TextColor3 = Theme.SubText,
+		TextSize = 10,
+		Parent = btn,
+	})
+
+	local on, hover = false, false
+	local function render()
+		local base = on and Theme.Red or Theme.Element
+		btn.BackgroundColor3 = hover and lighten(base) or base
+		stroke.Color = on and Theme.Red or Theme.Accent
+	end
+	btn.MouseEnter:Connect(function()
+		hover = true
+		render()
+	end)
+	btn.MouseLeave:Connect(function()
+		hover = false
+		render()
+	end)
+	a.visuals[#a.visuals + 1] = function(state)
+		on = state
+		render()
+	end
+
+	quickButtons[id] = { btn = btn, keyLbl = keyLbl }
+	makeDraggable(btn, function()
+		toggleAction(id)
+	end, function()
+		return not Settings.quickLocked
+	end, function()
+		Settings.quickPos[id] = udimToTable(btn.Position)
+		saveSoon()
+	end)
+end
+
+----------------------------------------------------------------------
+-- Menu widgets that depend on the registry
+----------------------------------------------------------------------
+local function bindToggle(id)
+	local a = Actions[id]
+	local api = createToggle(a.label, false, function(on)
+		setAction(id, on)
+	end)
+	a.visuals[#a.visuals + 1] = api.Visual
+	return api
+end
+
+local function createBindRow(id)
+	local a = Actions[id]
+	local isToggle = a.kind == "toggle"
+
+	local row = new("Frame", {
+		Name = "Bind_" .. id,
+		Size = UDim2.new(1, 0, 0, 34),
+		BackgroundColor3 = Theme.Element,
+		BorderSizePixel = 0,
+		LayoutOrder = nextOrder(),
+		Parent = content,
+	})
+	corner(row, 6)
+	new("TextLabel", {
+		Position = UDim2.fromOffset(10, 0),
+		Size = UDim2.new(1, isToggle and -160 or -108, 1, 0),
+		BackgroundTransparency = 1,
+		Font = Enum.Font.Gotham,
+		Text = a.label,
+		TextColor3 = Theme.Text,
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Parent = row,
+	})
+
+	local keyBtn = new("TextButton", {
+		Position = UDim2.new(1, isToggle and -148 or -94, 0.5, -12),
+		Size = UDim2.fromOffset(86, 24),
+		BackgroundColor3 = Theme.Track,
+		AutoButtonColor = false,
+		Font = Enum.Font.GothamBold,
+		Text = "",
+		TextColor3 = Theme.Text,
+		TextSize = 11,
+		Parent = row,
+	})
+	corner(keyBtn, 5)
+	keyBtn.MouseButton1Click:Connect(function()
+		listening = (listening == id) and nil or id
+		refreshAllBinds()
+	end)
+	keyBtn.MouseButton2Click:Connect(function()
+		hotkeys[id] = nil
+		Settings.hotkeys[id] = false
+		if listening == id then
+			listening = nil
+		end
+		refreshAllBinds()
+		saveSoon()
+	end)
+	bindRows[id] = { keyBtn = keyBtn }
+
+	if isToggle then
+		local quickChk = new("TextButton", {
+			Position = UDim2.new(1, -56, 0.5, -12),
+			Size = UDim2.fromOffset(48, 24),
+			AutoButtonColor = false,
+			Font = Enum.Font.GothamBold,
+			Text = "Quick",
+			TextColor3 = Theme.Text,
+			TextSize = 11,
+			Parent = row,
+		})
+		corner(quickChk, 5)
+		local function renderChk()
+			quickChk.BackgroundColor3 = Settings.quickVisible[id] and Theme.Accent or Theme.Track
+		end
+		renderChk()
+		quickChk.MouseButton1Click:Connect(function()
+			Settings.quickVisible[id] = not Settings.quickVisible[id]
+			renderChk()
+			updateQuickVisibility()
+			saveSoon()
+		end)
+	end
+end
+
 local function addSwatch(btn, color)
 	local swatch = new("Frame", {
 		Position = UDim2.new(1, -28, 0.5, -8),
@@ -1539,11 +2355,27 @@ local function addSwatch(btn, color)
 	return swatch
 end
 
+----------------------------------------------------------------------
+-- Build the menu
+----------------------------------------------------------------------
 -- FLY
 createSection("FLY MODE")
-createToggle("Fly", false, setFly)
+bindToggle("fly")
+-- NEW: Flight style toggle
+local flyStyleBtn
+local function flyStyleLabel()
+	return "Flight Style: " .. (Fly.moveMode == "camera" and "Superman (3D)" or "Plane (H+V)")
+end
+flyStyleBtn = createButton(flyStyleLabel(), function()
+	Fly.moveMode = (Fly.moveMode == "camera") and "plane" or "camera"
+	flyStyleBtn.SetText(flyStyleLabel())
+	saveSoon()
+end)
 createToggle("Flight Effects", Fly.effects, function(on)
 	Fly.effects = on
+end)
+createToggle("Fly Noclip (pass through walls)", Fly.noclip, function(on)
+	Fly.noclip = on
 end)
 createSlider("Fly Speed", 10, 300, Fly.speed, function(v)
 	Fly.speed = v
@@ -1554,29 +2386,29 @@ end)
 
 -- MAGNET
 createSection("MAGNET + FORMATION")
-createToggle("Magnet", false, setMagnet)
-createSlider("Part Count", 1, 150, Magnet.count, function(v)
+bindToggle("magnet")
+-- NEW: Infinite range toggle
+createToggle("Infinite Range (auto-grab new objects)", CONFIG.Magnet.Unlimited, function(on)
+	CONFIG.Magnet.Unlimited = on
+	Magnet.dirty = true
+	saveSoon()
+end)
+createSlider("Part Count", 1, CONFIG.Magnet.MaxCount, Magnet.count, function(v)
 	Magnet.count = v
 	Magnet.dirty = true
 end)
 createSlider("Formation Radius", 3, 40, Magnet.radius, function(v)
 	Magnet.radius = v
 end)
-local formationBtn
-formationBtn = createButton("Formation: " .. Magnet.shapes[Magnet.shape], function()
-	Magnet.shape = Magnet.shape % #Magnet.shapes + 1
-	formationBtn.SetText("Formation: " .. Magnet.shapes[Magnet.shape])
-end)
-createToggle("Spin", false, function(on)
-	Magnet.spin = on
-end)
+formationBtn = createButton("Formation: " .. Magnet.shapes[Magnet.shape], cycleFormation)
+bindToggle("spin")
 createSlider("Spin Speed", 1, 20, Magnet.spinSpeed, function(v)
 	Magnet.spinSpeed = v
 end)
 
 -- PLAYER ESP
 createSection("PLAYER ESP")
-createToggle("Player ESP", false, setESP)
+bindToggle("playerEsp")
 createToggle("Show Names", ESP.showNames, function(on)
 	ESP.showNames = on
 	updateESPStyle()
@@ -1602,10 +2434,10 @@ outlineSwatch = addSwatch(outlineBtn.Button, ColorPresets[ESP.outlineIndex][2])
 
 -- OBJECT ESP
 createSection("OBJECT ESP (UNANCHORED)")
-createToggle("Object ESP", false, setObjectESP)
+bindToggle("objectEsp")
 createSlider("Max Objects", 10, 500, ObjESP.max, function(v)
 	ObjESP.max = v
-	ObjESP.last = 0 -- rescan right away
+	ObjESP.last = 0
 end)
 local objBtn, objSwatch
 objBtn = createButton("Object Color: " .. ColorPresets[ObjESP.colorIndex][1], function()
@@ -1616,4 +2448,56 @@ objBtn = createButton("Object Color: " .. ColorPresets[ObjESP.colorIndex][1], fu
 end)
 objSwatch = addSwatch(objBtn.Button, ColorPresets[ObjESP.colorIndex][2])
 
-print("[MultiTool] Loaded successfully - Fly | Magnet | Player ESP | Object ESP ready")
+-- QUICK BUTTONS + HOTKEYS
+createSection("QUICK BUTTONS")
+quickMasterApi = createToggle("Show Quick Buttons", Settings.quickEnabled, setQuickEnabled)
+createToggle("Lock Quick Button Positions", Settings.quickLocked, function(on)
+	Settings.quickLocked = on
+	saveSoon()
+end)
+createButton("Reset Quick Button Positions", function()
+	Settings.quickPos = {}
+	for index, id in ipairs(toggleIds) do
+		quickButtons[id].btn.Position = quickDefaultPos(index)
+	end
+	saveSoon()
+end)
+
+createSection("HOTKEYS  (click to rebind, right-click to clear)")
+for _, id in ipairs(ActionOrder) do
+	createBindRow(id)
+end
+
+createSection("WINDOW")
+createButton("Unload Script", cleanup, Theme.Red)
+
+----------------------------------------------------------------------
+-- Final state sync
+----------------------------------------------------------------------
+refreshAllBinds()
+for _, id in ipairs(ActionOrder) do
+	syncAction(id)
+end
+updateQuickVisibility()
+
+if Settings.window then
+	root.Position = tableToUDim(Settings.window.pos)
+	if Settings.window.pinned then
+		setPinned(true)
+	end
+	if Settings.window.collapsed then
+		setCollapsed(true, true)
+	end
+	task.defer(function()
+		local vs = gui.AbsoluteSize
+		local p = root.AbsolutePosition
+		local cx = math.clamp(p.X, 0, math.max(vs.X - 120, 0))
+		local cy = math.clamp(p.Y, 0, math.max(vs.Y - 60, 0))
+		if cx ~= p.X or cy ~= p.Y then
+			local pos = root.Position
+			root.Position = UDim2.new(pos.X.Scale, pos.X.Offset + (cx - p.X), pos.Y.Scale, pos.Y.Offset + (cy - p.Y))
+		end
+	end)
+end
+
+print("[MultiTool] Loaded successfully - Fly | Magnet | Player ESP | Object ESP | Quick buttons + hotkeys ready")
