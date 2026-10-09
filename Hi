@@ -1,4 +1,15 @@
--- == Multi Cheat: Fly + Magnet + Formation + Chest ESP ==
+--[[
+	Multi Tool - loader-style GUI
+	Features: Fly Mode, Magnet + Formation, Player ESP
+
+	Usage:
+		loadstring(game:HttpGet("URL", true))()
+
+	Notes:
+	- Parts only follow the magnet if your client has network ownership of them
+	  (the script raises your simulation radius where the executor allows it).
+	- Roblox renders at most ~31 Highlights at once, so ESP is capped by the engine.
+]]
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -6,664 +17,1063 @@ local RunService = game:GetService("RunService")
 local CoreGui = game:GetService("CoreGui")
 local Workspace = game:GetService("Workspace")
 
-local player = Players.LocalPlayer
+local LocalPlayer = Players.LocalPlayer
 
--- === НАСТРОЙКИ ===
-local ESP_CONFIG = {
-    Enabled = false,
-    FillColor = Color3.fromRGB(255, 215, 0),
-    OutlineColor = Color3.fromRGB(255, 255, 255),
-    FillTransparency = 0.5,
-    OutlineTransparency = 0.2,
-    ChestNames = {"Chest", "Crate", "Loot", "Treasure", "Box", "Reward", "Сундук"}
+----------------------------------------------------------------------
+-- CONFIG / THEME
+----------------------------------------------------------------------
+local CONFIG = {
+	Title = "Multi Tool",
+	GuiName = "MultiToolGui",
+
+	Fly = { Speed = 60, VerticalSpeed = 40 },
+	Magnet = { PartCount = 40, Radius = 12, SpinSpeed = 5 },
+	ESP = {
+		FillColor = "Red",       -- name from ColorPresets
+		OutlineColor = "White",  -- name from ColorPresets
+		FillTransparency = 0.5,
+		OutlineTransparency = 0.4,
+		ShowNames = true,
+	},
 }
 
-local FLY_CONFIG = {
-    Enabled = false,
-    Speed = 50,
-    LiftSpeed = 25
+local ColorPresets = {
+	{ "Red", Color3.fromRGB(255, 0, 0) },
+	{ "Green", Color3.fromRGB(0, 255, 90) },
+	{ "Blue", Color3.fromRGB(0, 120, 255) },
+	{ "Yellow", Color3.fromRGB(255, 220, 0) },
+	{ "Purple", Color3.fromRGB(170, 0, 255) },
+	{ "Cyan", Color3.fromRGB(0, 255, 255) },
+	{ "White", Color3.fromRGB(255, 255, 255) },
+	{ "Black", Color3.fromRGB(0, 0, 0) },
 }
 
-local MAGNET_CONFIG = {
-    Enabled = false,
-    Count = 30,           -- сколько предметов притянуть
-    Radius = 8,           -- радиус формации вокруг игрока
-    Shape = "Circle",     -- Circle / Sphere / Cube / Helix
-    Spin = false,         -- вращать формацию
-    SpinSpeed = 2         -- скорость вращения
+local Theme = {
+	Background = Color3.fromRGB(25, 25, 25),
+	TitleBar = Color3.fromRGB(20, 20, 20),
+	Element = Color3.fromRGB(42, 42, 42),
+	Track = Color3.fromRGB(60, 60, 60),
+	Accent = Color3.fromRGB(88, 101, 242),
+	Red = Color3.fromRGB(220, 60, 60),
+	Text = Color3.fromRGB(235, 235, 235),
+	SubText = Color3.fromRGB(160, 160, 160),
+	Stroke = Color3.fromRGB(50, 50, 50),
 }
 
-local SHAPES = {"Circle", "Sphere", "Cube", "Helix"}
-local SHAPE_INDEX = 1
-
--- === УДАЛЯЕМ СТАРОЕ ОКНО ===
-if CoreGui:FindFirstChild("MyCoolGui") then
-    CoreGui.MyCoolGui:Destroy()
+----------------------------------------------------------------------
+-- Remove a previous instance if the script is executed twice
+----------------------------------------------------------------------
+local env = (getgenv and getgenv()) or _G
+if env.__MultiToolCleanup then
+	pcall(env.__MultiToolCleanup)
 end
 
--- === СОЗДАНИЕ GUI ===
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "MyCoolGui"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-
-local parentOk = pcall(function() ScreenGui.Parent = CoreGui end)
-if not parentOk then
-    ScreenGui.Parent = player:WaitForChild("PlayerGui")
+----------------------------------------------------------------------
+-- Helpers
+----------------------------------------------------------------------
+local connections = {}
+local function track(conn)
+	connections[#connections + 1] = conn
+	return conn
 end
 
--- Основное окно
-local Main = Instance.new("Frame")
-Main.Name = "Main"
-Main.Size = UDim2.new(0, 340, 0, 500)
-Main.Position = UDim2.new(0.5, -170, 0.5, -250)
-Main.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
-Main.BorderSizePixel = 0
-Main.Parent = ScreenGui
-
-local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 10)
-MainCorner.Parent = Main
-
-local MainStroke = Instance.new("UIStroke")
-MainStroke.Color = Color3.fromRGB(60, 60, 70)
-MainStroke.Thickness = 1
-MainStroke.Parent = Main
-
--- Тень
-local Shadow = Instance.new("ImageLabel")
-Shadow.AnchorPoint = Vector2.new(0.5, 0.5)
-Shadow.Position = UDim2.new(0.5, 0, 0.5, 0)
-Shadow.Size = UDim2.new(1, 40, 1, 40)
-Shadow.BackgroundTransparency = 1
-Shadow.Image = "rbxassetid://6014261993"
-Shadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
-Shadow.ImageTransparency = 0.5
-Shadow.ScaleType = Enum.ScaleType.Slice
-Shadow.SliceCenter = Rect.new(49, 49, 450, 450)
-Shadow.ZIndex = -1
-Shadow.Parent = Main
-
--- Заголовок
-local TitleBar = Instance.new("Frame")
-TitleBar.Name = "TitleBar"
-TitleBar.Size = UDim2.new(1, 0, 0, 40)
-TitleBar.BackgroundColor3 = Color3.fromRGB(32, 32, 38)
-TitleBar.BorderSizePixel = 0
-TitleBar.Parent = Main
-
-local TitleCorner = Instance.new("UICorner")
-TitleCorner.CornerRadius = UDim.new(0, 10)
-TitleCorner.Parent = TitleBar
-
-local TitleFix = Instance.new("Frame")
-TitleFix.Size = UDim2.new(1, 0, 0, 10)
-TitleFix.Position = UDim2.new(0, 0, 1, -10)
-TitleFix.BackgroundColor3 = Color3.fromRGB(32, 32, 38)
-TitleFix.BorderSizePixel = 0
-TitleFix.Parent = TitleBar
-
-local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, -50, 1, 0)
-Title.Position = UDim2.new(0, 15, 0, 0)
-Title.BackgroundTransparency = 1
-Title.Text = "⚡ Multi Cheat v3"
-Title.TextColor3 = Color3.fromRGB(240, 240, 245)
-Title.TextSize = 16
-Title.Font = Enum.Font.GothamBold
-Title.TextXAlignment = Enum.TextXAlignment.Left
-Title.Parent = TitleBar
-
--- Кнопка закрытия
-local CloseBtn = Instance.new("TextButton")
-CloseBtn.Size = UDim2.new(0, 30, 0, 30)
-CloseBtn.Position = UDim2.new(1, -38, 0, 5)
-CloseBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
-CloseBtn.Text = "✕"
-CloseBtn.TextColor3 = Color3.fromRGB(240, 240, 245)
-CloseBtn.TextSize = 14
-CloseBtn.Font = Enum.Font.GothamBold
-CloseBtn.BorderSizePixel = 0
-CloseBtn.AutoButtonColor = false
-CloseBtn.Parent = TitleBar
-
-local CloseCorner = Instance.new("UICorner")
-CloseCorner.CornerRadius = UDim.new(0, 6)
-CloseCorner.Parent = CloseBtn
-
-CloseBtn.MouseEnter:Connect(function()
-    CloseBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
-end)
-CloseBtn.MouseLeave:Connect(function()
-    CloseBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
-end)
-CloseBtn.MouseButton1Click:Connect(function()
-    ScreenGui:Destroy()
-    ESP_CONFIG.Enabled = false
-    FLY_CONFIG.Enabled = false
-    MAGNET_CONFIG.Enabled = false
-    releaseAllParts()
-end)
-
--- Скроллящийся контейнер
-local Content = Instance.new("ScrollingFrame")
-Content.Size = UDim2.new(1, -20, 1, -55)
-Content.Position = UDim2.new(0, 10, 0, 48)
-Content.BackgroundTransparency = 1
-Content.BorderSizePixel = 0
-Content.ScrollBarThickness = 4
-Content.ScrollBarImageColor3 = Color3.fromRGB(88, 101, 242)
-Content.CanvasSize = UDim2.new(0, 0, 0, 900)
-Content.Parent = Main
-
-local ContentLayout = Instance.new("UIListLayout")
-ContentLayout.Padding = UDim.new(0, 8)
-ContentLayout.SortOrder = Enum.SortOrder.LayoutOrder
-ContentLayout.Parent = Content
-
--- === ХЕЛПЕРЫ ДЛЯ UI ===
-local function makeSectionTitle(text)
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, 0, 0, 24)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = "— " .. text .. " —"
-    lbl.TextColor3 = Color3.fromRGB(150, 150, 160)
-    lbl.TextSize = 12
-    lbl.Font = Enum.Font.GothamBold
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.Parent = Content
-    return lbl
+local function new(class, props)
+	local inst = Instance.new(class)
+	local parent
+	for k, v in pairs(props or {}) do
+		if k == "Parent" then
+			parent = v
+		else
+			inst[k] = v
+		end
+	end
+	if parent then
+		inst.Parent = parent
+	end
+	return inst
 end
 
-local function makeButton(text, color)
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, 0, 0, 36)
-    btn.BackgroundColor3 = color or Color3.fromRGB(88, 101, 242)
-    btn.Text = text
-    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    btn.TextSize = 14
-    btn.Font = Enum.Font.GothamBold
-    btn.BorderSizePixel = 0
-    btn.AutoButtonColor = false
-    btn.Parent = Content
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, 8)
-    c.Parent = btn
-    return btn
+local function corner(inst, radius)
+	return new("UICorner", { CornerRadius = UDim.new(0, radius), Parent = inst })
 end
 
-local function makeLabel(text)
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, 0, 0, 20)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = text
-    lbl.TextColor3 = Color3.fromRGB(200, 200, 210)
-    lbl.TextSize = 13
-    lbl.Font = Enum.Font.Gotham
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.Parent = Content
-    return lbl
+local function lighten(color, amount)
+	return color:Lerp(Color3.new(1, 1, 1), amount or 0.12)
 end
 
-local function makeSlider(labelText, minVal, maxVal, defaultVal, callback)
-    local container = Instance.new("Frame")
-    container.Size = UDim2.new(1, 0, 0, 40)
-    container.BackgroundTransparency = 1
-    container.Parent = Content
-
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, 0, 0, 18)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = labelText .. ": " .. defaultVal
-    lbl.TextColor3 = Color3.fromRGB(200, 200, 210)
-    lbl.TextSize = 13
-    lbl.Font = Enum.Font.Gotham
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.Parent = container
-
-    local bar = Instance.new("Frame")
-    bar.Size = UDim2.new(1, 0, 0, 6)
-    bar.Position = UDim2.new(0, 0, 0, 26)
-    bar.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
-    bar.BorderSizePixel = 0
-    bar.Parent = container
-    local bc = Instance.new("UICorner")
-    bc.CornerRadius = UDim.new(1, 0)
-    bc.Parent = bar
-
-    local fill = Instance.new("Frame")
-    local startRatio = (defaultVal - minVal) / (maxVal - minVal)
-    fill.Size = UDim2.new(startRatio, 0, 1, 0)
-    fill.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
-    fill.BorderSizePixel = 0
-    fill.Parent = bar
-    local fc = Instance.new("UICorner")
-    fc.CornerRadius = UDim.new(1, 0)
-    fc.Parent = fill
-
-    local knob = Instance.new("TextButton")
-    knob.Size = UDim2.new(0, 16, 0, 16)
-    knob.Position = UDim2.new(startRatio, -8, 0.5, -8)
-    knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    knob.Text = ""
-    knob.BorderSizePixel = 0
-    knob.Parent = bar
-    local kc = Instance.new("UICorner")
-    kc.CornerRadius = UDim.new(1, 0)
-    kc.Parent = knob
-
-    local dragging = false
-    local function update(input)
-        local relX = math.clamp((input.Position.X - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
-        fill.Size = UDim2.new(relX, 0, 1, 0)
-        knob.Position = UDim2.new(relX, -8, 0.5, -8)
-        local val = math.floor(minVal + relX * (maxVal - minVal))
-        lbl.Text = labelText .. ": " .. val
-        callback(val)
-    end
-
-    knob.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-        end
-    end)
-    bar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            update(input)
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            update(input)
-        end
-    end)
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
-        end
-    end)
-
-    return container
+local function presetIndex(name)
+	for i, p in ipairs(ColorPresets) do
+		if p[1] == name then
+			return i
+		end
+	end
+	return 1
 end
 
--- === UI: FLY ===
-makeSectionTitle("✈ FLY")
-local FlyBtn = makeButton("Включить полёт", Color3.fromRGB(88, 101, 242))
-makeSlider("Скорость полёта", 10, 300, FLY_CONFIG.Speed, function(v)
-    FLY_CONFIG.Speed = v
-end)
-makeSlider("Скорость вверх/вниз", 5, 150, FLY_CONFIG.LiftSpeed, function(v)
-    FLY_CONFIG.LiftSpeed = v
-end)
+----------------------------------------------------------------------
+-- GUI skeleton
+----------------------------------------------------------------------
+local gui = new("ScreenGui", {
+	Name = CONFIG.GuiName,
+	ResetOnSpawn = false,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+	IgnoreGuiInset = true,
+	DisplayOrder = 999,
+})
 
--- === UI: MAGNET ===
-makeSectionTitle("🌀 MAGNET + FORMATION")
-local MagnetBtn = makeButton("Включить магнит", Color3.fromRGB(88, 101, 242))
-makeSlider("Кол-во предметов", 1, 150, MAGNET_CONFIG.Count, function(v)
-    MAGNET_CONFIG.Count = v
+local okParent = pcall(function()
+	gui.Parent = CoreGui
 end)
-makeSlider("Радиус формации", 3, 40, MAGNET_CONFIG.Radius, function(v)
-    MAGNET_CONFIG.Radius = v
-end)
-
--- Кнопка выбора формы
-local ShapeBtn = makeButton("Форма: Circle", Color3.fromRGB(50, 50, 58))
-ShapeBtn.MouseButton1Click:Connect(function()
-    SHAPE_INDEX = SHAPE_INDEX + 1
-    if SHAPE_INDEX > #SHAPES then SHAPE_INDEX = 1 end
-    MAGNET_CONFIG.Shape = SHAPES[SHAPE_INDEX]
-    ShapeBtn.Text = "Форма: " .. MAGNET_CONFIG.Shape
-end)
-
--- Кнопка вращения
-local SpinBtn = makeButton("Вращение: ВЫКЛ", Color3.fromRGB(50, 50, 58))
-SpinBtn.MouseButton1Click:Connect(function()
-    MAGNET_CONFIG.Spin = not MAGNET_CONFIG.Spin
-    SpinBtn.Text = "Вращение: " .. (MAGNET_CONFIG.Spin and "ВКЛ" or "ВЫКЛ")
-    SpinBtn.BackgroundColor3 = MAGNET_CONFIG.Spin and Color3.fromRGB(80, 180, 100) or Color3.fromRGB(50, 50, 58)
-end)
-
-makeSlider("Скорость вращения", 1, 20, MAGNET_CONFIG.SpinSpeed, function(v)
-    MAGNET_CONFIG.SpinSpeed = v
-end)
-
--- === UI: ESP ===
-makeSectionTitle("🥇 CHEST ESP")
-local EspBtn = makeButton("Включить Chest ESP", Color3.fromRGB(88, 101, 242))
-
--- === ЛОГИКА ESP ===
-local activeHighlights = {}
-
-local function clearAllHighlights()
-    for _, h in pairs(activeHighlights) do
-        if h and h.Parent then h:Destroy() end
-    end
-    activeHighlights = {}
+if not okParent or not gui.Parent then
+	gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 end
 
-local function createHighlight(obj)
-    if not obj or not obj.Parent then return end
-    if activeHighlights[obj] and activeHighlights[obj].Parent then return end
-    local h = Instance.new("Highlight")
-    h.Adornee = obj
-    h.FillColor = ESP_CONFIG.FillColor
-    h.OutlineColor = ESP_CONFIG.OutlineColor
-    h.FillTransparency = ESP_CONFIG.FillTransparency
-    h.OutlineTransparency = ESP_CONFIG.OutlineTransparency
-    h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    h.Parent = obj
-    activeHighlights[obj] = h
-end
+local espFolder = new("Folder", { Name = "MultiToolESP", Parent = gui.Parent })
 
-local function scanForChests()
-    if not ESP_CONFIG.Enabled then return end
-    for _, obj in pairs(Workspace:GetDescendants()) do
-        if obj:IsA("BasePart") or obj:IsA("Model") then
-            for _, namePattern in ipairs(ESP_CONFIG.ChestNames) do
-                if string.find(string.lower(obj.Name), string.lower(namePattern)) then
-                    createHighlight(obj)
-                    break
-                end
-            end
-        end
-    end
-end
+-- Root holds the shadow + main window (so the shadow follows while dragging)
+local root = new("Frame", {
+	Name = "Root",
+	Size = UDim2.fromOffset(340, 430),
+	Position = UDim2.new(0.5, -170, 0.5, -215),
+	BackgroundTransparency = 1,
+	Parent = gui,
+})
 
-task.spawn(function()
-    while task.wait(1) do
-        if ESP_CONFIG.Enabled then scanForChests() end
-    end
+new("ImageLabel", {
+	Name = "Shadow",
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.new(0.5, 0, 0.5, 6),
+	Size = UDim2.new(1, 46, 1, 46),
+	BackgroundTransparency = 1,
+	Image = "rbxassetid://6014261993",
+	ImageColor3 = Color3.new(0, 0, 0),
+	ImageTransparency = 0.45,
+	ScaleType = Enum.ScaleType.Slice,
+	SliceCenter = Rect.new(49, 49, 450, 450),
+	ZIndex = 0,
+	Parent = root,
+})
+
+local main = new("Frame", {
+	Name = "Main",
+	Size = UDim2.fromScale(1, 1),
+	BackgroundColor3 = Theme.Background,
+	BorderSizePixel = 0,
+	ZIndex = 1,
+	Parent = root,
+})
+corner(main, 10)
+new("UIStroke", { Color = Theme.Stroke, Thickness = 1, Parent = main })
+
+-- Title bar
+local titleBar = new("Frame", {
+	Name = "TitleBar",
+	Size = UDim2.new(1, 0, 0, 38),
+	BackgroundColor3 = Theme.TitleBar,
+	BorderSizePixel = 0,
+	Parent = main,
+})
+corner(titleBar, 10)
+new("Frame", { -- square off the bottom corners of the title bar
+	Position = UDim2.new(0, 0, 1, -10),
+	Size = UDim2.new(1, 0, 0, 10),
+	BackgroundColor3 = Theme.TitleBar,
+	BorderSizePixel = 0,
+	Parent = titleBar,
+})
+new("Frame", { -- accent line
+	Position = UDim2.new(0, 0, 1, -2),
+	Size = UDim2.new(1, 0, 0, 2),
+	BackgroundColor3 = Theme.Accent,
+	BorderSizePixel = 0,
+	Parent = titleBar,
+})
+new("TextLabel", {
+	Name = "Title",
+	Position = UDim2.fromOffset(14, 0),
+	Size = UDim2.new(1, -60, 1, -2),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	Text = CONFIG.Title,
+	TextColor3 = Theme.Text,
+	TextSize = 15,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Parent = titleBar,
+})
+
+local closeBtn = new("TextButton", {
+	Name = "Close",
+	Position = UDim2.new(1, -34, 0.5, -15),
+	Size = UDim2.fromOffset(28, 28),
+	BackgroundColor3 = Theme.Element,
+	AutoButtonColor = false,
+	Font = Enum.Font.GothamBold,
+	Text = "X",
+	TextColor3 = Theme.Text,
+	TextSize = 13,
+	Parent = titleBar,
+})
+corner(closeBtn, 6)
+closeBtn.MouseEnter:Connect(function()
+	closeBtn.BackgroundColor3 = Theme.Red
+end)
+closeBtn.MouseLeave:Connect(function()
+	closeBtn.BackgroundColor3 = Theme.Element
 end)
 
--- === ЛОГИКА FLY ===
-local flyConn, flyBV, flyBG
+-- Scrollable content
+local content = new("ScrollingFrame", {
+	Name = "Content",
+	Position = UDim2.new(0, 8, 0, 46),
+	Size = UDim2.new(1, -16, 1, -54),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	ScrollBarThickness = 4,
+	ScrollBarImageColor3 = Theme.Accent,
+	CanvasSize = UDim2.new(),
+	AutomaticCanvasSize = Enum.AutomaticSize.Y,
+	ScrollingDirection = Enum.ScrollingDirection.Y,
+	Parent = main,
+})
+new("UIListLayout", {
+	Padding = UDim.new(0, 6),
+	SortOrder = Enum.SortOrder.LayoutOrder,
+	Parent = content,
+})
+new("UIPadding", {
+	PaddingTop = UDim.new(0, 4),
+	PaddingBottom = UDim.new(0, 8),
+	PaddingRight = UDim.new(0, 8),
+	Parent = content,
+})
+
+-- Dragging (mouse + touch) via title bar
+do
+	local dragging, dragStart, startPos = false, nil, nil
+
+	titleBar.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			startPos = root.Position
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					dragging = false
+				end
+			end)
+		end
+	end)
+
+	track(UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch) then
+			local delta = input.Position - dragStart
+			root.Position = UDim2.new(
+				startPos.X.Scale, startPos.X.Offset + delta.X,
+				startPos.Y.Scale, startPos.Y.Offset + delta.Y
+			)
+		end
+	end))
+end
+
+----------------------------------------------------------------------
+-- Widget factories
+----------------------------------------------------------------------
+local layoutCounter = 0
+local function nextOrder()
+	layoutCounter += 1
+	return layoutCounter
+end
+
+local function createSection(text)
+	new("TextLabel", {
+		Name = "Section_" .. text,
+		Size = UDim2.new(1, 0, 0, 24),
+		BackgroundTransparency = 1,
+		Font = Enum.Font.GothamBold,
+		Text = text,
+		TextColor3 = Theme.Accent,
+		TextSize = 12,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		LayoutOrder = nextOrder(),
+		Parent = content,
+	})
+end
+
+local function createToggle(text, default, callback)
+	local btn = new("TextButton", {
+		Name = "Toggle_" .. text,
+		Size = UDim2.new(1, 0, 0, 34),
+		BackgroundColor3 = Theme.Element,
+		AutoButtonColor = false,
+		Font = Enum.Font.GothamBold,
+		Text = "",
+		TextColor3 = Theme.Text,
+		TextSize = 13,
+		LayoutOrder = nextOrder(),
+		Parent = content,
+	})
+	corner(btn, 6)
+
+	local state, hover = false, false
+	local api = {}
+
+	local function render()
+		local base = state and Theme.Red or Theme.Element
+		btn.BackgroundColor3 = hover and lighten(base) or base
+		btn.Text = text .. (state and "   [ON]" or "   [OFF]")
+	end
+
+	function api.Set(value)
+		state = value and true or false
+		render()
+		callback(state)
+	end
+
+	btn.MouseEnter:Connect(function()
+		hover = true
+		render()
+	end)
+	btn.MouseLeave:Connect(function()
+		hover = false
+		render()
+	end)
+	btn.MouseButton1Click:Connect(function()
+		api.Set(not state)
+	end)
+
+	state = default and true or false
+	render()
+	if state then
+		callback(state)
+	end
+
+	api.Button = btn
+	return api
+end
+
+local function createButton(text, callback)
+	local btn = new("TextButton", {
+		Name = "Button_" .. text,
+		Size = UDim2.new(1, 0, 0, 34),
+		BackgroundColor3 = Theme.Accent,
+		AutoButtonColor = false,
+		Font = Enum.Font.GothamBold,
+		Text = text,
+		TextColor3 = Theme.Text,
+		TextSize = 13,
+		LayoutOrder = nextOrder(),
+		Parent = content,
+	})
+	corner(btn, 6)
+
+	btn.MouseEnter:Connect(function()
+		btn.BackgroundColor3 = lighten(Theme.Accent, 0.15)
+	end)
+	btn.MouseLeave:Connect(function()
+		btn.BackgroundColor3 = Theme.Accent
+	end)
+	btn.MouseButton1Click:Connect(callback)
+
+	return {
+		Button = btn,
+		SetText = function(t)
+			btn.Text = t
+		end,
+	}
+end
+
+local function createSlider(text, min, max, default, callback)
+	local holder = new("Frame", {
+		Name = "Slider_" .. text,
+		Size = UDim2.new(1, 0, 0, 48),
+		BackgroundColor3 = Theme.Element,
+		BorderSizePixel = 0,
+		LayoutOrder = nextOrder(),
+		Parent = content,
+	})
+	corner(holder, 6)
+
+	new("TextLabel", {
+		Position = UDim2.fromOffset(10, 5),
+		Size = UDim2.new(1, -70, 0, 18),
+		BackgroundTransparency = 1,
+		Font = Enum.Font.Gotham,
+		Text = text,
+		TextColor3 = Theme.Text,
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = holder,
+	})
+	local valueLabel = new("TextLabel", {
+		Position = UDim2.new(1, -60, 0, 5),
+		Size = UDim2.fromOffset(50, 18),
+		BackgroundTransparency = 1,
+		Font = Enum.Font.GothamBold,
+		Text = tostring(default),
+		TextColor3 = Theme.SubText,
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Right,
+		Parent = holder,
+	})
+
+	local track_ = new("Frame", {
+		Position = UDim2.new(0, 10, 0, 33),
+		Size = UDim2.new(1, -20, 0, 6),
+		BackgroundColor3 = Theme.Track,
+		BorderSizePixel = 0,
+		Parent = holder,
+	})
+	corner(track_, 3)
+	local fill = new("Frame", {
+		Size = UDim2.fromScale(0, 1),
+		BackgroundColor3 = Theme.Accent,
+		BorderSizePixel = 0,
+		Parent = track_,
+	})
+	corner(fill, 3)
+	local knob = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0, 0, 0.5, 0),
+		Size = UDim2.fromOffset(14, 14),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BorderSizePixel = 0,
+		ZIndex = 2,
+		Parent = track_,
+	})
+	corner(knob, 7)
+
+	local hit = new("TextButton", { -- enlarged touch/click target
+		Position = UDim2.new(0, 0, 0, -12),
+		Size = UDim2.new(1, 0, 1, 24),
+		BackgroundTransparency = 1,
+		Text = "",
+		Parent = track_,
+	})
+
+	local function setValue(v, silent)
+		v = math.clamp(math.floor(v + 0.5), min, max)
+		local a = (v - min) / (max - min)
+		fill.Size = UDim2.fromScale(a, 1)
+		knob.Position = UDim2.new(a, 0, 0.5, 0)
+		valueLabel.Text = tostring(v)
+		if not silent then
+			callback(v)
+		end
+	end
+
+	local function updateFromX(x)
+		local a = math.clamp((x - track_.AbsolutePosition.X) / math.max(track_.AbsoluteSize.X, 1), 0, 1)
+		setValue(min + a * (max - min))
+	end
+
+	hit.InputBegan:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseButton1
+			and input.UserInputType ~= Enum.UserInputType.Touch then
+			return
+		end
+		content.ScrollingEnabled = false
+		updateFromX(input.Position.X)
+
+		local moveConn, endConn
+		moveConn = UserInputService.InputChanged:Connect(function(i)
+			if i.UserInputType == Enum.UserInputType.MouseMovement
+				or i.UserInputType == Enum.UserInputType.Touch then
+				updateFromX(i.Position.X)
+			end
+		end)
+		endConn = UserInputService.InputEnded:Connect(function(i)
+			if i == input or (input.UserInputType == Enum.UserInputType.MouseButton1
+				and i.UserInputType == Enum.UserInputType.MouseButton1) then
+				moveConn:Disconnect()
+				endConn:Disconnect()
+				content.ScrollingEnabled = true
+			end
+		end)
+	end)
+
+	setValue(default, true) -- initial visual only; feature tables already hold the default
+end
+
+----------------------------------------------------------------------
+-- FLY MODE
+----------------------------------------------------------------------
+local Fly = {
+	enabled = false,
+	speed = CONFIG.Fly.Speed,
+	vspeed = CONFIG.Fly.VerticalSpeed,
+}
+local flyBV, flyBG, flyHum, flyConn
 
 local function stopFly()
-    if flyConn then flyConn:Disconnect(); flyConn = nil end
-    if flyBV then flyBV:Destroy(); flyBV = nil end
-    if flyBG then flyBG:Destroy(); flyBG = nil end
+	if flyConn then
+		flyConn:Disconnect()
+		flyConn = nil
+	end
+	if flyBV then
+		flyBV:Destroy()
+		flyBV = nil
+	end
+	if flyBG then
+		flyBG:Destroy()
+		flyBG = nil
+	end
+	if flyHum then
+		pcall(function()
+			flyHum.PlatformStand = false
+		end)
+		flyHum = nil
+	end
 end
 
 local function startFly()
-    local char = player.Character
-    if not char then return end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hrp or not hum then return end
+	stopFly()
+	local char = LocalPlayer.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not hrp or not hum then
+		return
+	end
 
-    hum.PlatformStand = true
+	flyHum = hum
+	hum.PlatformStand = true
 
-    flyBV = Instance.new("BodyVelocity")
-    flyBV.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-    flyBV.Velocity = Vector3.zero
-    flyBV.Parent = hrp
+	flyBV = Instance.new("BodyVelocity")
+	flyBV.Name = "MT_FlyBV"
+	flyBV.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+	flyBV.Velocity = Vector3.zero
+	flyBV.Parent = hrp
 
-    flyBG = Instance.new("BodyGyro")
-    flyBG.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-    flyBG.CFrame = hrp.CFrame
-    flyBG.P = 10000
-    flyBG.D = 500
-    flyBG.Parent = hrp
+	flyBG = Instance.new("BodyGyro")
+	flyBG.Name = "MT_FlyBG"
+	flyBG.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+	flyBG.P = 2e4
+	flyBG.D = 500
+	flyBG.CFrame = hrp.CFrame
+	flyBG.Parent = hrp
 
-    flyConn = RunService.RenderStepped:Connect(function()
-        if not FLY_CONFIG.Enabled then return end
-        local cam = Workspace.CurrentCamera
-        if not cam then return end
-        local dir = Vector3.zero
-        if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir = dir + cam.CFrame.LookVector end
-        if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir = dir - cam.CFrame.LookVector end
-        if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir = dir - cam.CFrame.RightVector end
-        if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir = dir + cam.CFrame.RightVector end
-        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.new(0, FLY_CONFIG.LiftSpeed / FLY_CONFIG.Speed, 0) end
-        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then dir = dir - Vector3.new(0, FLY_CONFIG.LiftSpeed / FLY_CONFIG.Speed, 0) end
+	flyConn = RunService.RenderStepped:Connect(function()
+		if not hrp.Parent or not flyBV or not flyBG then
+			return
+		end
+		local cf = Workspace.CurrentCamera.CFrame
+		local dir = Vector3.zero
+		local vert = 0
 
-        if dir.Magnitude > 0 then
-            flyBV.Velocity = dir.Unit * FLY_CONFIG.Speed
-        else
-            flyBV.Velocity = Vector3.zero
-        end
-        flyBG.CFrame = cam.CFrame
-    end)
+		if not UserInputService:GetFocusedTextBox() then
+			if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir += cf.LookVector end
+			if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir -= cf.LookVector end
+			if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir += cf.RightVector end
+			if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir -= cf.RightVector end
+			if UserInputService:IsKeyDown(Enum.KeyCode.Space) then vert += Fly.vspeed end
+			if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then vert -= Fly.vspeed end
+		end
+
+		local horizontal = Vector3.zero
+		if dir.Magnitude > 0 then
+			horizontal = dir.Unit * Fly.speed
+		end
+
+		flyBV.Velocity = horizontal + Vector3.new(0, vert, 0)
+		flyBG.CFrame = cf
+	end)
 end
 
--- === ЛОГИКА MAGNET + FORMATION ===
-local capturedParts = {}   -- [part] = {bp=, bg=, idx=}
+local function setFly(on)
+	Fly.enabled = on
+	if on then
+		startFly()
+	else
+		stopFly()
+	end
+end
+
+-- Re-apply flight after respawn
+track(LocalPlayer.CharacterAdded:Connect(function(char)
+	if Fly.enabled then
+		char:WaitForChild("HumanoidRootPart", 10)
+		char:WaitForChild("Humanoid", 10)
+		if Fly.enabled then
+			startFly()
+		end
+	end
+end))
+
+----------------------------------------------------------------------
+-- MAGNET + FORMATION
+----------------------------------------------------------------------
+local Magnet = {
+	enabled = false,
+	count = CONFIG.Magnet.PartCount,
+	radius = CONFIG.Magnet.Radius,
+	shapes = { "Circle", "Sphere", "Cube", "Helix" },
+	shape = 1,
+	spin = false,
+	spinSpeed = CONFIG.Magnet.SpinSpeed,
+	dirty = false,
+}
+local captured = {}      -- array of { part, bp, bg, canCollide }
+local capturedSet = {}   -- [part] = entry
 local magnetConn
+local spinAngle = 0
+local lastScan = 0
 
-local function isPartOfAnyCharacter(part)
-    for _, plr in pairs(Players:GetPlayers()) do
-        if plr.Character and part:IsDescendantOf(plr.Character) then
-            return true
-        end
-    end
-    return false
+local function norm(k, side)
+	if side > 1 then
+		return (k / (side - 1)) * 2 - 1
+	end
+	return 0
 end
 
-local function releasePart(part)
-    local data = capturedParts[part]
-    if not data then return end
-    if data.bp then data.bp:Destroy() end
-    if data.bg then data.bg:Destroy() end
-    capturedParts[part] = nil
+local function formationOffset(shape, i, n, r, rot)
+	local v
+	if shape == "Circle" then
+		local a = (i / n) * math.pi * 2
+		v = Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+
+	elseif shape == "Sphere" then -- Fibonacci sphere
+		local y = 1 - 2 * (i - 0.5) / n
+		local rad = math.sqrt(math.max(0, 1 - y * y))
+		local theta = i * 2.399963229728653
+		v = Vector3.new(math.cos(theta) * rad, y, math.sin(theta) * rad) * r
+
+	elseif shape == "Cube" then -- points spread over the 6 faces
+		local idx = i - 1
+		local face = idx % 6
+		local j = math.floor(idx / 6)
+		local side = math.max(1, math.ceil(math.sqrt(math.ceil(n / 6))))
+		local u = norm(j % side, side)
+		local w = norm(math.floor(j / side), side)
+		if face == 0 then v = Vector3.new(1, u, w)
+		elseif face == 1 then v = Vector3.new(-1, u, w)
+		elseif face == 2 then v = Vector3.new(u, 1, w)
+		elseif face == 3 then v = Vector3.new(u, -1, w)
+		elseif face == 4 then v = Vector3.new(u, w, 1)
+		else v = Vector3.new(u, w, -1) end
+		v = v * r
+
+	else -- Helix
+		local f = n > 1 and (i - 1) / (n - 1) or 0.5
+		local a = f * math.pi * 2 * 3
+		v = Vector3.new(math.cos(a) * r, (f * 2 - 1) * r, math.sin(a) * r)
+	end
+
+	return CFrame.Angles(0, rot, 0) * v -- slow orbit around the player
 end
 
-local function releaseAllParts()
-    for part, _ in pairs(capturedParts) do
-        releasePart(part)
-    end
-    capturedParts = {}
+local function release(entry)
+	capturedSet[entry.part] = nil
+	if entry.bp then entry.bp:Destroy() end
+	if entry.bg then entry.bg:Destroy() end
+	if entry.part and entry.part.Parent then
+		entry.part.CanCollide = entry.canCollide
+	end
 end
 
-local function capturePart(part, idx)
-    if capturedParts[part] then return end
-    part.CanCollide = false
+local function capture(part)
+	local bp = Instance.new("BodyPosition")
+	bp.Name = "MT_BP"
+	bp.MaxForce = Vector3.new(1e8, 1e8, 1e8)
+	bp.P = 3e4
+	bp.D = 1e3
+	bp.Position = part.Position
+	bp.Parent = part
 
-    local bp = Instance.new("BodyPosition")
-    bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-    bp.P = 50000
-    bp.D = 800
-    bp.Position = part.Position
-    bp.Parent = part
+	local bg = Instance.new("BodyGyro")
+	bg.Name = "MT_BG"
+	bg.MaxTorque = Vector3.new(1e8, 1e8, 1e8)
+	bg.P = 2e4
+	bg.D = 500
+	bg.CFrame = part.CFrame
+	bg.Parent = part
 
-    local bg = Instance.new("BodyGyro")
-    bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-    bg.P = 10000
-    bg.D = 500
-    bg.CFrame = part.CFrame
-    bg.Parent = part
-
-    capturedParts[part] = {bp = bp, bg = bg, idx = idx}
+	local entry = { part = part, bp = bp, bg = bg, canCollide = part.CanCollide }
+	part.CanCollide = false -- avoids parts shoving the player / each other
+	capturedSet[part] = entry
+	return entry
 end
 
-local function findUnanchoredParts()
-    local list = {}
-    for _, obj in pairs(Workspace:GetDescendants()) do
-        if obj:IsA("BasePart") and not obj.Anchored then
-            if not isPartOfAnyCharacter(obj) then
-                table.insert(list, obj)
-            end
-            if #list >= MAGNET_CONFIG.Count then break end
-        end
-    end
-    return list
+local function isInsideAnyCharacter(part, chars)
+	for i = 1, #chars do
+		if part:IsDescendantOf(chars[i]) then
+			return true
+		end
+	end
+	return false
 end
 
--- Вычисление точки формации по индексу
-local function getFormationOffset(idx, total, shape, R, timeOffset)
-    total = math.max(total, 1)
-    local ratio = (idx - 1) / total
-    local angle = ratio * math.pi * 2
+local function refreshCaptures()
+	-- 1) prune dead entries
+	local alive = {}
+	for _, e in ipairs(captured) do
+		local p = e.part
+		if p.Parent and not p.Anchored and e.bp.Parent == p and e.bg.Parent == p then
+			alive[#alive + 1] = e
+		else
+			release(e)
+		end
+	end
+	captured = alive
 
-    if shape == "Circle" then
-        return Vector3.new(math.cos(angle) * R, 0, math.sin(angle) * R)
+	-- 2) trim extras
+	while #captured > Magnet.count do
+		release(table.remove(captured))
+	end
 
-    elseif shape == "Sphere" then
-        -- равномерное распределение (спираль Фибоначчи)
-        local i = idx
-        local phi = math.acos(1 - 2 * (i + 0.5) / total)
-        local theta = math.pi * (1 + 5 ^ 0.5) * (i + 0.5)
-        return Vector3.new(
-            math.sin(phi) * math.cos(theta) * R,
-            math.cos(phi) * R,
-            math.sin(phi) * math.sin(theta) * R
-        )
+	-- 3) fill up with the nearest free parts
+	if #captured < Magnet.count then
+		local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+		if not hrp then
+			return
+		end
 
-    elseif shape == "Cube" then
-        -- распределяем по 6 граням куба
-        local perFace = math.max(math.ceil(total / 6), 1)
-        local face = math.floor((idx - 1) / perFace) % 6
-        local localIdx = (idx - 1) % perFace
-        local u = (localIdx / math.max(perFace - 1, 1)) - 0.5
-        local v = ((idx * 7) % 100) / 100 - 0.5
-        local half = R
+		local chars = {}
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr.Character then
+				chars[#chars + 1] = plr.Character
+			end
+		end
 
-        if face == 0 then return Vector3.new( half, u * R * 2, v * R * 2) end
-        if face == 1 then return Vector3.new(-half, u * R * 2, v * R * 2) end
-        if face == 2 then return Vector3.new(u * R * 2,  half, v * R * 2) end
-        if face == 3 then return Vector3.new(u * R * 2, -half, v * R * 2) end
-        if face == 4 then return Vector3.new(u * R * 2, v * R * 2,  half) end
-        return Vector3.new(u * R * 2, v * R * 2, -half)
+		local found = {}
+		for _, obj in ipairs(Workspace:GetDescendants()) do
+			if obj:IsA("BasePart") and not obj.Anchored and not capturedSet[obj]
+				and not isInsideAnyCharacter(obj, chars) then
+				local rootPart = obj.AssemblyRootPart
+				if not (rootPart and rootPart.Anchored) then
+					found[#found + 1] = { part = obj, dist = (obj.Position - hrp.Position).Magnitude }
+				end
+			end
+		end
 
-    elseif shape == "Helix" then
-        -- спираль по вертикали
-        local height = R * 3
-        local y = -height / 2 + ratio * height
-        local a = ratio * math.pi * 6
-        return Vector3.new(math.cos(a) * R * 0.7, y, math.sin(a) * R * 0.7)
-    end
+		table.sort(found, function(a, b)
+			return a.dist < b.dist
+		end)
 
-    return Vector3.zero
+		for i = 1, math.min(Magnet.count - #captured, #found) do
+			captured[#captured + 1] = capture(found[i].part)
+		end
+	end
 end
 
-local function startMagnet()
-    magnetConn = RunService.RenderStepped:Connect(function()
-        if not MAGNET_CONFIG.Enabled then return end
-        local char = player.Character
-        if not char then return end
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        if not hrp then return end
+local function magnetStep(dt)
+	local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+	if not hrp then
+		return
+	end
 
-        -- чистим мёртвые ссылки
-        for part, _ in pairs(capturedParts) do
-            if not part or not part.Parent then
-                releasePart(part)
-            end
-        end
+	local now = os.clock()
+	if (Magnet.dirty and now - lastScan > 0.25) or (#captured < Magnet.count and now - lastScan > 2) then
+		Magnet.dirty = false
+		lastScan = now
+		refreshCaptures()
+	end
 
-        -- добираем новые, если не хватает
-        local currentCount = 0
-        for _ in pairs(capturedParts) do currentCount = currentCount + 1 end
+	spinAngle += dt * Magnet.spinSpeed
 
-        if currentCount < MAGNET_CONFIG.Count then
-            local candidates = findUnanchoredParts()
-            local added = 0
-            for _, part in ipairs(candidates) do
-                if not capturedParts[part] then
-                    capturePart(part, currentCount + added + 1)
-                    added = added + 1
-                    if currentCount + added >= MAGNET_CONFIG.Count then break end
-                end
-            end
-        end
+	local n = #captured
+	local center = hrp.Position
+	local shape = Magnet.shapes[Magnet.shape]
+	local rot = now * 0.5
+	local needsPrune = false
 
-        -- обновляем позиции
-        local total = 0
-        for _ in pairs(capturedParts) do total = total + 1 end
+	for i, e in ipairs(captured) do
+		if e.part.Parent and e.bp.Parent and e.bg.Parent then
+			e.bp.Position = center + formationOffset(shape, i, n, Magnet.radius, rot)
+			if Magnet.spin then
+				e.bg.CFrame = CFrame.Angles(0, spinAngle + i * 0.5, 0)
+			else
+				e.bg.CFrame = CFrame.new()
+			end
+		else
+			needsPrune = true
+		end
+	end
 
-        local t = tick()
-        for part, data in pairs(capturedParts) do
-            if data.bp and data.bp.Parent then
-                local offset = getFormationOffset(data.idx, total, MAGNET_CONFIG.Shape, MAGNET_CONFIG.Radius, t)
-                data.bp.Position = hrp.Position + offset
-            end
-
-            if data.bg and data.bg.Parent then
-                if MAGNET_CONFIG.Spin then
-                    local angle = t * MAGNET_CONFIG.SpinSpeed
-                    data.bg.CFrame = CFrame.new(part.Position) * CFrame.Angles(angle, angle * 0.7, angle * 0.4)
-                else
-                    data.bg.CFrame = CFrame.new(part.Position) * part.CFrame.Rotation
-                end
-            end
-        end
-    end)
+	if needsPrune then
+		Magnet.dirty = true
+	end
 end
 
-local function stopMagnet()
-    if magnetConn then magnetConn:Disconnect(); magnetConn = nil end
-    releaseAllParts()
+local function releaseAll()
+	for _, e in ipairs(captured) do
+		release(e)
+	end
+	captured = {}
+	capturedSet = {}
 end
 
--- === ОБРАБОТКА КНОПОК ===
-FlyBtn.MouseButton1Click:Connect(function()
-    FLY_CONFIG.Enabled = not FLY_CONFIG.Enabled
-    if FLY_CONFIG.Enabled then
-        FlyBtn.Text = "Выключить полёт"
-        FlyBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
-        startFly()
-    else
-        FlyBtn.Text = "Включить полёт"
-        FlyBtn.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
-        stopFly()
-        local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-        if hum then hum.PlatformStand = false end
-    end
+local function setMagnet(on)
+	Magnet.enabled = on
+	if magnetConn then
+		magnetConn:Disconnect()
+		magnetConn = nil
+	end
+	if on then
+		pcall(function()
+			LocalPlayer.MaximumSimulationRadius = math.huge
+		end)
+		pcall(function()
+			sethiddenproperty(LocalPlayer, "SimulationRadius", math.huge)
+		end)
+		Magnet.dirty = true
+		magnetConn = RunService.Heartbeat:Connect(magnetStep)
+	else
+		releaseAll() -- BodyPosition/BodyGyro destroyed, parts fall back
+	end
+end
+
+----------------------------------------------------------------------
+-- PLAYER ESP
+----------------------------------------------------------------------
+local ESP = {
+	enabled = false,
+	showNames = CONFIG.ESP.ShowNames,
+	fillIndex = presetIndex(CONFIG.ESP.FillColor),
+	outlineIndex = presetIndex(CONFIG.ESP.OutlineColor),
+	fillTransparency = CONFIG.ESP.FillTransparency,
+	outlineTransparency = CONFIG.ESP.OutlineTransparency,
+	objects = {},   -- [player] = { highlight, billboard, died }
+	hooks = {},     -- [player] = { connections }
+}
+
+local function clearESP(plr)
+	local e = ESP.objects[plr]
+	if not e then
+		return
+	end
+	ESP.objects[plr] = nil
+	if e.died then e.died:Disconnect() end
+	if e.highlight then e.highlight:Destroy() end
+	if e.billboard then e.billboard:Destroy() end
+end
+
+local function applyESP(plr)
+	clearESP(plr)
+	if not ESP.enabled or plr == LocalPlayer then
+		return
+	end
+	local char = plr.Character
+	if not char then
+		return
+	end
+
+	local entry = {}
+	ESP.objects[plr] = entry
+
+	task.spawn(function()
+		local hum = char:WaitForChild("Humanoid", 10)
+		local head = char:WaitForChild("Head", 10)
+		-- bail if state changed while waiting (toggled off, respawned, left, ...)
+		if ESP.objects[plr] ~= entry or plr.Character ~= char or not hum or hum.Health <= 0 then
+			return
+		end
+
+		local h = Instance.new("Highlight")
+		h.Name = "MT_ESP"
+		h.Adornee = char
+		h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		h.FillColor = ColorPresets[ESP.fillIndex][2]
+		h.OutlineColor = ColorPresets[ESP.outlineIndex][2]
+		h.FillTransparency = ESP.fillTransparency
+		h.OutlineTransparency = ESP.outlineTransparency
+		h.Parent = espFolder
+		entry.highlight = h
+
+		if head then
+			local bb = Instance.new("BillboardGui")
+			bb.Name = "MT_Name"
+			bb.Adornee = head
+			bb.AlwaysOnTop = true
+			bb.Size = UDim2.fromOffset(200, 30)
+			bb.StudsOffset = Vector3.new(0, 2.5, 0)
+			bb.Enabled = ESP.showNames
+			bb.Parent = espFolder
+
+			new("TextLabel", {
+				Size = UDim2.fromScale(1, 1),
+				BackgroundTransparency = 1,
+				Font = Enum.Font.GothamBold,
+				Text = plr.DisplayName,
+				TextColor3 = Color3.new(1, 1, 1),
+				TextStrokeColor3 = Color3.new(0, 0, 0),
+				TextStrokeTransparency = 0.4,
+				TextSize = 14,
+				Parent = bb,
+			})
+			entry.billboard = bb
+		end
+
+		entry.died = hum.Died:Connect(function()
+			if ESP.objects[plr] == entry then
+				clearESP(plr)
+			end
+		end)
+	end)
+end
+
+local function updateESPStyle()
+	for _, e in pairs(ESP.objects) do
+		if e.highlight then
+			e.highlight.FillColor = ColorPresets[ESP.fillIndex][2]
+			e.highlight.OutlineColor = ColorPresets[ESP.outlineIndex][2]
+			e.highlight.FillTransparency = ESP.fillTransparency
+			e.highlight.OutlineTransparency = ESP.outlineTransparency
+		end
+		if e.billboard then
+			e.billboard.Enabled = ESP.showNames
+		end
+	end
+end
+
+local function hookPlayer(plr)
+	if plr == LocalPlayer or ESP.hooks[plr] then
+		return
+	end
+	ESP.hooks[plr] = {
+		plr.CharacterAdded:Connect(function()
+			applyESP(plr)
+		end),
+		plr.CharacterRemoving:Connect(function()
+			clearESP(plr)
+		end),
+	}
+	if plr.Character then
+		applyESP(plr)
+	end
+end
+
+local function unhookPlayer(plr)
+	clearESP(plr)
+	local hooks = ESP.hooks[plr]
+	if hooks then
+		for _, c in ipairs(hooks) do
+			c:Disconnect()
+		end
+		ESP.hooks[plr] = nil
+	end
+end
+
+for _, plr in ipairs(Players:GetPlayers()) do
+	hookPlayer(plr)
+end
+track(Players.PlayerAdded:Connect(hookPlayer))
+track(Players.PlayerRemoving:Connect(unhookPlayer))
+
+local function setESP(on)
+	ESP.enabled = on
+	if on then
+		for _, plr in ipairs(Players:GetPlayers()) do
+			applyESP(plr)
+		end
+	else
+		for plr in pairs(ESP.objects) do
+			clearESP(plr)
+		end
+	end
+end
+
+----------------------------------------------------------------------
+-- Cleanup / close
+----------------------------------------------------------------------
+local function cleanup()
+	Fly.enabled = false
+	stopFly()
+	setMagnet(false)
+
+	ESP.enabled = false
+	for plr in pairs(ESP.objects) do
+		clearESP(plr)
+	end
+	for plr in pairs(ESP.hooks) do
+		unhookPlayer(plr)
+	end
+
+	for _, c in ipairs(connections) do
+		c:Disconnect()
+	end
+	connections = {}
+
+	if espFolder then espFolder:Destroy() end
+	if gui then gui:Destroy() end
+	env.__MultiToolCleanup = nil
+end
+
+env.__MultiToolCleanup = cleanup
+closeBtn.MouseButton1Click:Connect(cleanup)
+
+----------------------------------------------------------------------
+-- Build the UI
+----------------------------------------------------------------------
+-- FLY
+createSection("FLY MODE")
+createToggle("Fly", false, setFly)
+createSlider("Fly Speed", 10, 300, Fly.speed, function(v)
+	Fly.speed = v
+end)
+createSlider("Vertical Speed", 5, 150, Fly.vspeed, function(v)
+	Fly.vspeed = v
 end)
 
-MagnetBtn.MouseButton1Click:Connect(function()
-    MAGNET_CONFIG.Enabled = not MAGNET_CONFIG.Enabled
-    if MAGNET_CONFIG.Enabled then
-        MagnetBtn.Text = "Выключить магнит"
-        MagnetBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
-        startMagnet()
-    else
-        MagnetBtn.Text = "Включить магнит"
-        MagnetBtn.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
-        stopMagnet()
-    end
+-- MAGNET
+createSection("MAGNET + FORMATION")
+createToggle("Magnet", false, setMagnet)
+createSlider("Part Count", 1, 150, Magnet.count, function(v)
+	Magnet.count = v
+	Magnet.dirty = true
+end)
+createSlider("Formation Radius", 3, 40, Magnet.radius, function(v)
+	Magnet.radius = v
+end)
+local formationBtn
+formationBtn = createButton("Formation: " .. Magnet.shapes[Magnet.shape], function()
+	Magnet.shape = Magnet.shape % #Magnet.shapes + 1
+	formationBtn.SetText("Formation: " .. Magnet.shapes[Magnet.shape])
+end)
+createToggle("Spin", false, function(on)
+	Magnet.spin = on
+end)
+createSlider("Spin Speed", 1, 20, Magnet.spinSpeed, function(v)
+	Magnet.spinSpeed = v
 end)
 
-EspBtn.MouseButton1Click:Connect(function()
-    ESP_CONFIG.Enabled = not ESP_CONFIG.Enabled
-    if ESP_CONFIG.Enabled then
-        EspBtn.Text = "Выключить Chest ESP"
-        EspBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
-        scanForChests()
-    else
-        EspBtn.Text = "Включить Chest ESP"
-        EspBtn.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
-        clearAllHighlights()
-    end
+-- ESP
+createSection("PLAYER ESP")
+createToggle("Player ESP", false, setESP)
+createToggle("Show Names", ESP.showNames, function(on)
+	ESP.showNames = on
+	updateESPStyle()
 end)
 
--- === ПЕРЕТАСКИВАНИЕ ===
-local dragging = false
-local dragStart, startPos
-
-local function updateDrag(input)
-    local delta = input.Position - dragStart
-    Main.Position = UDim2.new(
-        startPos.X.Scale, startPos.X.Offset + delta.X,
-        startPos.Y.Scale, startPos.Y.Offset + delta.Y
-    )
+local function addSwatch(btn, color)
+	local swatch = new("Frame", {
+		Position = UDim2.new(1, -28, 0.5, -8),
+		Size = UDim2.fromOffset(16, 16),
+		BackgroundColor3 = color,
+		BorderSizePixel = 0,
+		Parent = btn,
+	})
+	corner(swatch, 4)
+	new("UIStroke", { Color = Color3.new(1, 1, 1), Thickness = 1, Transparency = 0.5, Parent = swatch })
+	return swatch
 end
 
-TitleBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = Main.Position
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then dragging = false end
-        end)
-    end
+local fillBtn, fillSwatch
+fillBtn = createButton("Fill Color: " .. ColorPresets[ESP.fillIndex][1], function()
+	ESP.fillIndex = ESP.fillIndex % #ColorPresets + 1
+	fillBtn.SetText("Fill Color: " .. ColorPresets[ESP.fillIndex][1])
+	fillSwatch.BackgroundColor3 = ColorPresets[ESP.fillIndex][2]
+	updateESPStyle()
 end)
+fillSwatch = addSwatch(fillBtn.Button, ColorPresets[ESP.fillIndex][2])
 
-UserInputService.InputChanged:Connect(function(input)
-    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-        updateDrag(input)
-    end
+local outlineBtn, outlineSwatch
+outlineBtn = createButton("Outline Color: " .. ColorPresets[ESP.outlineIndex][1], function()
+	ESP.outlineIndex = ESP.outlineIndex % #ColorPresets + 1
+	outlineBtn.SetText("Outline Color: " .. ColorPresets[ESP.outlineIndex][1])
+	outlineSwatch.BackgroundColor3 = ColorPresets[ESP.outlineIndex][2]
+	updateESPStyle()
 end)
+outlineSwatch = addSwatch(outlineBtn.Button, ColorPresets[ESP.outlineIndex][2])
 
-print("✅ Multi Cheat v3 загружен! Fly + Magnet + Formation + ESP")
+print("[MultiTool] Loaded successfully - Fly | Magnet | ESP ready")
