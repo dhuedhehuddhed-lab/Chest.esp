@@ -1,6 +1,13 @@
 --[[
 	Multi Tool - loader-style GUI
-	Features: Fly Mode, Magnet + Formation, Player ESP, Object ESP
+	Features:
+	  • Fly Mode (2 styles)
+	  • Magnet + Formation (Circle / Sphere / Cube / Helix / WALL)
+	  • Player ESP / Object ESP
+	  • Target ESP (click-to-mark, redirect magnet)
+	  • Wall-In target (trap under blocks)
+	  • Throw any object at any point / at target
+	  • Second "Advanced" window + quick buttons + rebindable hotkeys
 
 	Usage:
 		loadstring(game:HttpGet("URL", true))()
@@ -16,6 +23,12 @@ local HttpService = game:GetService("HttpService")
 local LocalPlayer = Players.LocalPlayer
 
 ----------------------------------------------------------------------
+-- SHARED ADVANCED STATE (must exist before magnetStep reads them)
+----------------------------------------------------------------------
+local Target   = { player = nil, highlight = nil, billboard = nil, show = true }
+local Redirect = { mode = "self", point = nil } -- "self" | "target" | "point"
+
+----------------------------------------------------------------------
 -- CONFIG / THEME
 ----------------------------------------------------------------------
 local CONFIG = {
@@ -28,19 +41,18 @@ local CONFIG = {
 		Effects = true,
 		Noclip = true,
 		SprintMultiplier = 1.8,
-		-- NEW: "camera" = Superman-style 3D flight along look vector
-		--      "plane"  = WASD always horizontal, Space/Ctrl for vertical (more stable)
-		MoveMode = "plane",
+		MoveMode = "plane",   -- "plane" | "camera"
 	},
 	Magnet = {
 		PartCount = 150,
-		MaxCount = 500,          -- NEW: raised from 150
+		MaxCount = 500,
 		Radius = 12,
 		SpinSpeed = 5,
 		FarDistance = 80,
 		MaxPullSpeed = 900,
-		Unlimited = true,        -- NEW: continuous auto-grab while magnet is on
-		ScanInterval = 1.2,      -- NEW: seconds between background rescans
+		Unlimited = true,
+		ScanInterval = 1.2,
+		WallDistance = 6,     -- how far in front of player the wall appears
 	},
 	ESP = {
 		FillColor = "Red",
@@ -65,6 +77,7 @@ local CONFIG = {
 		cycleFormation = "V",
 		toggleMenu = "RightShift",
 		toggleQuick = "K",
+		toggleAdvMenu = "L",
 	},
 
 	Quick = {
@@ -101,7 +114,7 @@ local Theme = {
 }
 
 ----------------------------------------------------------------------
--- Remove a previous instance if the script is executed twice
+-- Cleanup env
 ----------------------------------------------------------------------
 local env = (getgenv and getgenv()) or _G
 if env.__MultiToolCleanup then
@@ -151,7 +164,7 @@ local function presetIndex(name)
 end
 
 ----------------------------------------------------------------------
--- GUI skeleton
+-- MAIN GUI skeleton
 ----------------------------------------------------------------------
 local gui = new("ScreenGui", {
 	Name = CONFIG.GuiName,
@@ -169,6 +182,7 @@ if not okParent or not gui.Parent then
 end
 
 local espFolder = new("Folder", { Name = "MultiToolESP", Parent = gui.Parent })
+local advFolder = new("Folder", { Name = "MultiToolAdv", Parent = gui.Parent })
 
 local root = new("Frame", {
 	Name = "Root",
@@ -372,34 +386,21 @@ local function createToggle(text, default, callback)
 		render()
 		callback(state)
 	end
-
 	function api.Visual(value)
 		state = value and true or false
 		render()
 	end
-
 	function api.Get()
 		return state
 	end
 
-	btn.MouseEnter:Connect(function()
-		hover = true
-		render()
-	end)
-	btn.MouseLeave:Connect(function()
-		hover = false
-		render()
-	end)
-	btn.MouseButton1Click:Connect(function()
-		api.Set(not state)
-	end)
+	btn.MouseEnter:Connect(function() hover = true render() end)
+	btn.MouseLeave:Connect(function() hover = false render() end)
+	btn.MouseButton1Click:Connect(function() api.Set(not state) end)
 
 	state = default and true or false
 	render()
-	if state then
-		callback(state)
-	end
-
+	if state then callback(state) end
 	api.Button = btn
 	return api
 end
@@ -419,20 +420,12 @@ local function createButton(text, callback, baseColor)
 		Parent = content,
 	})
 	corner(btn, 6)
-
-	btn.MouseEnter:Connect(function()
-		btn.BackgroundColor3 = lighten(baseColor, 0.15)
-	end)
-	btn.MouseLeave:Connect(function()
-		btn.BackgroundColor3 = baseColor
-	end)
+	btn.MouseEnter:Connect(function() btn.BackgroundColor3 = lighten(baseColor, 0.15) end)
+	btn.MouseLeave:Connect(function() btn.BackgroundColor3 = baseColor end)
 	btn.MouseButton1Click:Connect(callback)
-
 	return {
 		Button = btn,
-		SetText = function(t)
-			btn.Text = t
-		end,
+		SetText = function(t) btn.Text = t end,
 	}
 end
 
@@ -446,7 +439,6 @@ local function createSlider(text, min, max, default, callback)
 		Parent = content,
 	})
 	corner(holder, 6)
-
 	new("TextLabel", {
 		Position = UDim2.fromOffset(10, 5),
 		Size = UDim2.new(1, -70, 0, 18),
@@ -469,7 +461,6 @@ local function createSlider(text, min, max, default, callback)
 		TextXAlignment = Enum.TextXAlignment.Right,
 		Parent = holder,
 	})
-
 	local track_ = new("Frame", {
 		Position = UDim2.new(0, 10, 0, 33),
 		Size = UDim2.new(1, -20, 0, 6),
@@ -495,7 +486,6 @@ local function createSlider(text, min, max, default, callback)
 		Parent = track_,
 	})
 	corner(knob, 7)
-
 	local hit = new("TextButton", {
 		Position = UDim2.new(0, 0, 0, -12),
 		Size = UDim2.new(1, 0, 1, 24),
@@ -510,11 +500,8 @@ local function createSlider(text, min, max, default, callback)
 		fill.Size = UDim2.fromScale(a, 1)
 		knob.Position = UDim2.new(a, 0, 0.5, 0)
 		valueLabel.Text = tostring(v)
-		if not silent then
-			callback(v)
-		end
+		if not silent then callback(v) end
 	end
-
 	local function updateFromX(x)
 		local a = math.clamp((x - track_.AbsolutePosition.X) / math.max(track_.AbsoluteSize.X, 1), 0, 1)
 		setValue(min + a * (max - min))
@@ -522,12 +509,9 @@ local function createSlider(text, min, max, default, callback)
 
 	hit.InputBegan:Connect(function(input)
 		if input.UserInputType ~= Enum.UserInputType.MouseButton1
-			and input.UserInputType ~= Enum.UserInputType.Touch then
-			return
-		end
+			and input.UserInputType ~= Enum.UserInputType.Touch then return end
 		content.ScrollingEnabled = false
 		updateFromX(input.Position.X)
-
 		local moveConn, endConn
 		moveConn = UserInputService.InputChanged:Connect(function(i)
 			if i.UserInputType == Enum.UserInputType.MouseMovement
@@ -544,7 +528,6 @@ local function createSlider(text, min, max, default, callback)
 			end
 		end)
 	end)
-
 	setValue(default, true)
 end
 
@@ -580,9 +563,7 @@ end
 
 local function isInsideAny(part, list)
 	for i = 1, #list do
-		if part:IsDescendantOf(list[i]) then
-			return true
-		end
+		if part:IsDescendantOf(list[i]) then return true end
 	end
 	return false
 end
@@ -597,39 +578,26 @@ end
 
 local function spawnShockwave(pos, maxRadius, color, duration)
 	local ring = new("Part", {
-		Anchored = true,
-		CanCollide = false,
-		CanQuery = false,
-		CanTouch = false,
-		CastShadow = false,
-		Material = Enum.Material.Neon,
-		Color = color,
-		Shape = Enum.PartType.Cylinder,
+		Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false, CastShadow = false,
+		Material = Enum.Material.Neon, Color = color, Shape = Enum.PartType.Cylinder,
 		Size = Vector3.new(0.25, 2, 2),
 		CFrame = CFrame.new(pos + Vector3.new(0, 0.15, 0)) * CFrame.Angles(0, 0, math.rad(90)),
 		Parent = getFxFolder(),
 	})
-
 	local dust = new("ParticleEmitter", {
-		Rate = 0,
-		Lifetime = NumberRange.new(0.5, 1),
-		Speed = NumberRange.new(10, 22),
-		SpreadAngle = Vector2.new(85, 85),
-		Drag = 3,
+		Rate = 0, Lifetime = NumberRange.new(0.5, 1),
+		Speed = NumberRange.new(10, 22), SpreadAngle = Vector2.new(85, 85), Drag = 3,
 		Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1.2), NumberSequenceKeypoint.new(1, 4) }),
 		Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(1, 1) }),
 		Color = ColorSequence.new(Color3.fromRGB(215, 215, 215)),
 		Parent = ring,
 	})
 	dust:Emit(28)
-
 	task.spawn(function()
 		local t0 = os.clock()
 		while ring.Parent do
 			local a = (os.clock() - t0) / duration
-			if a >= 1 then
-				break
-			end
+			if a >= 1 then break end
 			local e = 1 - (1 - a) ^ 3
 			local d = 2 + maxRadius * 2 * e
 			ring.Size = Vector3.new(0.25, d, d)
@@ -644,33 +612,21 @@ end
 -- FLY MODE
 ----------------------------------------------------------------------
 local Fly = {
-	enabled = false,
-	state = "off",
-	speed = CONFIG.Fly.Speed,
-	vspeed = CONFIG.Fly.VerticalSpeed,
-	effects = CONFIG.Fly.Effects,
-	noclip = CONFIG.Fly.Noclip,
-	sprint = CONFIG.Fly.SprintMultiplier,
-	moveMode = CONFIG.Fly.MoveMode, -- NEW
+	enabled = false, state = "off",
+	speed = CONFIG.Fly.Speed, vspeed = CONFIG.Fly.VerticalSpeed,
+	effects = CONFIG.Fly.Effects, noclip = CONFIG.Fly.Noclip,
+	sprint = CONFIG.Fly.SprintMultiplier, moveMode = CONFIG.Fly.MoveMode,
 }
 
 local keysDown = {}
 track(UserInputService.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.Keyboard then
-		keysDown[input.KeyCode] = true
-	end
+	if input.UserInputType == Enum.UserInputType.Keyboard then keysDown[input.KeyCode] = true end
 end))
 track(UserInputService.InputEnded:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.Keyboard then
-		keysDown[input.KeyCode] = nil
-	end
+	if input.UserInputType == Enum.UserInputType.Keyboard then keysDown[input.KeyCode] = nil end
 end))
-track(UserInputService.WindowFocusReleased:Connect(function()
-	keysDown = {}
-end))
-local function keyDown(kc)
-	return keysDown[kc] == true or UserInputService:IsKeyDown(kc)
-end
+track(UserInputService.WindowFocusReleased:Connect(function() keysDown = {} end))
+local function keyDown(kc) return keysDown[kc] == true or UserInputService:IsKeyDown(kc) end
 
 local fly = {}
 local ARM_JOINTS = { { "RightShoulder", 1 }, { "LeftShoulder", -1 } }
@@ -679,46 +635,27 @@ local LINE_COUNT = 26
 local function stopTracks(hum)
 	local animator = hum:FindFirstChildOfClass("Animator")
 	if animator then
-		for _, tr in ipairs(animator:GetPlayingAnimationTracks()) do
-			tr:Stop(0.15)
-		end
+		for _, tr in ipairs(animator:GetPlayingAnimationTracks()) do tr:Stop(0.15) end
 	end
 end
 
 local function stopFly()
-	if fly.conn then
-		fly.conn:Disconnect()
-	end
+	if fly.conn then fly.conn:Disconnect() end
 	if fly.bv then fly.bv:Destroy() end
 	if fly.bg then fly.bg:Destroy() end
 	if fly.emitter then fly.emitter:Destroy() end
 	if fly.linesFolder then fly.linesFolder:Destroy() end
-
 	for _, t in ipairs(fly.trails or {}) do
-		t.trail:Destroy()
-		t.a0:Destroy()
-		t.a1:Destroy()
+		t.trail:Destroy() t.a0:Destroy() t.a1:Destroy()
 	end
 	for _, m in ipairs(fly.motors or {}) do
-		pcall(function()
-			m.motor.C0 = m.c0
-		end)
+		pcall(function() m.motor.C0 = m.c0 end)
 	end
 	for _, p in ipairs(fly.parts or {}) do
-		if p.part.Parent then
-			p.part.CanCollide = p.cc
-		end
+		if p.part.Parent then p.part.CanCollide = p.cc end
 	end
-	if fly.neck then
-		pcall(function()
-			fly.neck.motor.C0 = fly.neck.c0
-		end)
-	end
-	if fly.animate then
-		pcall(function()
-			fly.animate.Disabled = false
-		end)
-	end
+	if fly.neck then pcall(function() fly.neck.motor.C0 = fly.neck.c0 end) end
+	if fly.animate then pcall(function() fly.animate.Disabled = false end) end
 	if fly.hum then
 		pcall(function()
 			fly.hum.PlatformStand = false
@@ -726,10 +663,7 @@ local function stopFly()
 		end)
 	end
 	local cam = Workspace.CurrentCamera
-	if cam and fly.baseFOV then
-		cam.FieldOfView = fly.baseFOV
-	end
-
+	if cam and fly.baseFOV then cam.FieldOfView = fly.baseFOV end
 	fly = {}
 	Fly.state = "off"
 end
@@ -738,22 +672,15 @@ local function ensureMovers(hrp)
 	if not fly.bv or fly.bv.Parent ~= hrp then
 		if fly.bv then fly.bv:Destroy() end
 		fly.bv = new("BodyVelocity", {
-			Name = "MT_FlyBV",
-			MaxForce = Vector3.new(1e9, 1e9, 1e9),
-			P = 1e4,
-			Velocity = Vector3.zero,
-			Parent = hrp,
+			Name = "MT_FlyBV", MaxForce = Vector3.new(1e9, 1e9, 1e9), P = 1e4,
+			Velocity = Vector3.zero, Parent = hrp,
 		})
 	end
 	if not fly.bg or fly.bg.Parent ~= hrp then
 		if fly.bg then fly.bg:Destroy() end
 		fly.bg = new("BodyGyro", {
-			Name = "MT_FlyBG",
-			MaxTorque = Vector3.new(1e9, 1e9, 1e9),
-			P = 2e4,
-			D = 500,
-			CFrame = hrp.CFrame,
-			Parent = hrp,
+			Name = "MT_FlyBG", MaxTorque = Vector3.new(1e9, 1e9, 1e9), P = 2e4, D = 500,
+			CFrame = hrp.CFrame, Parent = hrp,
 		})
 	end
 end
@@ -764,14 +691,8 @@ local function setupTrails(char, hrp)
 		local a0 = new("Attachment", { Name = "MT_T0", Position = p0, Parent = part })
 		local a1 = new("Attachment", { Name = "MT_T1", Position = p1, Parent = part })
 		local tr = new("Trail", {
-			Name = "MT_Trail",
-			Attachment0 = a0,
-			Attachment1 = a1,
-			Lifetime = lifetime,
-			MinLength = 0.05,
-			FaceCamera = true,
-			LightEmission = 1,
-			Enabled = false,
+			Name = "MT_Trail", Attachment0 = a0, Attachment1 = a1, Lifetime = lifetime,
+			MinLength = 0.05, FaceCamera = true, LightEmission = 1, Enabled = false,
 			Color = ColorSequence.new(Color3.new(1, 1, 1), Theme.Accent),
 			Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.25), NumberSequenceKeypoint.new(1, 1) }),
 			WidthScale = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0) }),
@@ -779,7 +700,6 @@ local function setupTrails(char, hrp)
 		})
 		list[#list + 1] = { trail = tr, a0 = a0, a1 = a1 }
 	end
-
 	local limbs = { "RightHand", "LeftHand", "RightFoot", "LeftFoot", "Right Arm", "Left Arm", "Right Leg", "Left Leg" }
 	for _, name in ipairs(limbs) do
 		local p = char:FindFirstChild(name)
@@ -799,21 +719,12 @@ local function setupLines()
 		local rad = 5 + math.random() * 14
 		lines[i] = {
 			part = new("Part", {
-				Anchored = true,
-				CanCollide = false,
-				CanQuery = false,
-				CanTouch = false,
-				CastShadow = false,
-				Material = Enum.Material.Neon,
-				Color = Color3.fromRGB(210, 225, 255),
-				Transparency = 1,
-				Size = Vector3.new(0.07, 0.07, 6),
-				Parent = folder,
+				Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false, CastShadow = false,
+				Material = Enum.Material.Neon, Color = Color3.fromRGB(210, 225, 255),
+				Transparency = 1, Size = Vector3.new(0.07, 0.07, 6), Parent = folder,
 			}),
-			x = math.cos(ang) * rad,
-			y = math.sin(ang) * rad,
-			z = math.random() * 100 - 50,
-			spd = 0.8 + math.random() * 0.6,
+			x = math.cos(ang) * rad, y = math.sin(ang) * rad,
+			z = math.random() * 100 - 50, spd = 0.8 + math.random() * 0.6,
 		}
 	end
 	return folder, lines
@@ -824,9 +735,7 @@ local function updateLines(dt, center, dirUnit, speed, f)
 	local frame = CFrame.lookAt(center, center + dirUnit, up)
 	for _, l in ipairs(fly.lines) do
 		l.z += dt * speed * 1.4 * l.spd
-		if l.z > 50 then
-			l.z = -50
-		end
+		if l.z > 50 then l.z = -50 end
 		local fade = 1 - math.abs(l.z) / 50
 		l.part.Size = Vector3.new(0.07, 0.07, 3 + speed * 0.05 * l.spd)
 		l.part.CFrame = frame * CFrame.new(l.x, l.y, l.z)
@@ -840,7 +749,6 @@ local function flyStep(dt)
 		stopFly()
 		return
 	end
-
 	local cam = Workspace.CurrentCamera
 	local now = os.clock()
 	local landing = Fly.state == "landing"
@@ -850,17 +758,13 @@ local function flyStep(dt)
 	if hum.AutoRotate then hum.AutoRotate = false end
 	if Fly.noclip then
 		for _, p in ipairs(fly.parts) do
-			if p.part.CanCollide then
-				p.part.CanCollide = false
-			end
+			if p.part.CanCollide then p.part.CanCollide = false end
 		end
 		fly.noclipOn = true
 	elseif fly.noclipOn then
 		fly.noclipOn = false
 		for _, p in ipairs(fly.parts) do
-			if p.part.Parent then
-				p.part.CanCollide = p.cc
-			end
+			if p.part.Parent then p.part.CanCollide = p.cc end
 		end
 	end
 	if now - (fly.lastTrack or 0) > 0.4 then
@@ -868,13 +772,8 @@ local function flyStep(dt)
 		stopTracks(hum)
 	end
 
-	-- ============================================================
-	-- FIX: robust movement with two modes
-	-- ============================================================
 	local cf = cam.CFrame
 	local look, right = cf.LookVector, cf.RightVector
-
-	-- Always compute a valid horizontal basis (failsafe when looking straight up/down)
 	local flatLook = Vector3.new(look.X, 0, look.Z)
 	flatLook = flatLook.Magnitude > 1e-4 and flatLook.Unit or Vector3.new(0, 0, -1)
 	local flatRight = Vector3.new(right.X, 0, right.Z)
@@ -897,8 +796,6 @@ local function flyStep(dt)
 		if keyDown(Enum.KeyCode.Space) or keyDown(Enum.KeyCode.E) then vert += Fly.vspeed end
 		if keyDown(Enum.KeyCode.LeftControl) or keyDown(Enum.KeyCode.Q) then vert -= Fly.vspeed end
 		if keyDown(Enum.KeyCode.LeftShift) then sprint = Fly.sprint end
-
-		-- touch / gamepad fallback
 		if dir.Magnitude < 1e-4 and (not UserInputService.KeyboardEnabled or UserInputService.GamepadEnabled) then
 			local md = hum.MoveDirection
 			if md.Magnitude > 0.05 then
@@ -914,13 +811,9 @@ local function flyStep(dt)
 
 	if fly.takeoff then
 		local k = (now - fly.t0) / 0.9
-		if k < 1 then
-			target += Vector3.new(0, 55 * (1 - k) ^ 2, 0)
-		else
-			fly.takeoff = false
-		end
+		if k < 1 then target += Vector3.new(0, 55 * (1 - k) ^ 2, 0)
+		else fly.takeoff = false end
 	end
-
 	if dir.Magnitude == 0 and vert == 0 and not landing then
 		target += Vector3.new(0, math.sin(now * 2) * 1.5, 0)
 	end
@@ -948,9 +841,7 @@ local function flyStep(dt)
 	hrp.AssemblyLinearVelocity = fly.vel
 
 	local flat = Vector3.new(look.X, 0, look.Z)
-	if flat.Magnitude > 1e-3 then
-		fly.flat = flat.Unit
-	end
+	if flat.Magnitude > 1e-3 then fly.flat = flat.Unit end
 	local flatLook2 = fly.flat or Vector3.new(0, 0, -1)
 	local yaw = math.atan2(-flatLook2.X, -flatLook2.Z)
 	local dyaw = (yaw - fly.lastYaw + math.pi) % (math.pi * 2) - math.pi
@@ -987,24 +878,17 @@ local function flyStep(dt)
 
 	local f = math.clamp((speed - Fly.speed * 0.35) / (Fly.speed * 0.5), 0, 1)
 	local fxOn = Fly.effects
-
 	fly.fov += ((fxOn and 20 * s or 0) - fly.fov) * k
 	cam.FieldOfView = fly.baseFOV + fly.fov
-
 	local trailsOn = fxOn and s > 0.3
-	for _, t in ipairs(fly.trails) do
-		t.trail.Enabled = trailsOn
-	end
+	for _, t in ipairs(fly.trails) do t.trail.Enabled = trailsOn end
 	fly.emitter.Rate = fxOn and f * 60 or 0
-
 	if fxOn and f > 0.01 then
 		fly.linesVisible = true
 		updateLines(dt, hrp.Position, speed > 1 and v.Unit or look, speed, f)
 	elseif fly.linesVisible then
 		fly.linesVisible = false
-		for _, l in ipairs(fly.lines) do
-			l.part.Transparency = 1
-		end
+		for _, l in ipairs(fly.lines) do l.part.Transparency = 1 end
 	end
 end
 
@@ -1013,9 +897,7 @@ local function startFly(takeoff)
 	local char = LocalPlayer.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	if not hrp or not hum or hum.Health <= 0 then
-		return
-	end
+	if not hrp or not hum or hum.Health <= 0 then return end
 	local cam = Workspace.CurrentCamera
 
 	fly.char, fly.hrp, fly.hum = char, hrp, hum
@@ -1030,11 +912,7 @@ local function startFly(takeoff)
 	hum.PlatformStand = true
 	hum.AutoRotate = false
 	fly.animate = char:FindFirstChild("Animate")
-	if fly.animate then
-		pcall(function()
-			fly.animate.Disabled = true
-		end)
-	end
+	if fly.animate then pcall(function() fly.animate.Disabled = true end) end
 	stopTracks(hum)
 
 	fly.parts = {}
@@ -1047,7 +925,6 @@ local function startFly(takeoff)
 	if neck and neck:IsA("Motor6D") and neck.Parent and neck.Parent.Name == "Head" then
 		fly.neck = { motor = neck, c0 = neck.C0 }
 	end
-
 	fly.motors = {}
 	for _, j in ipairs(ARM_JOINTS) do
 		local m = char:FindFirstChild(j[1], true)
@@ -1060,24 +937,17 @@ local function startFly(takeoff)
 	fly.trails = setupTrails(char, hrp)
 	fly.linesFolder, fly.lines = setupLines()
 	fly.emitter = new("ParticleEmitter", {
-		Rate = 0,
-		Lifetime = NumberRange.new(0.35, 0.6),
-		Speed = NumberRange.new(0, 2),
-		LockedToPart = false,
-		LightEmission = 1,
+		Rate = 0, Lifetime = NumberRange.new(0.35, 0.6), Speed = NumberRange.new(0, 2),
+		LockedToPart = false, LightEmission = 1,
 		Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1.6), NumberSequenceKeypoint.new(1, 0) }),
 		Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.35), NumberSequenceKeypoint.new(1, 1) }),
 		Color = ColorSequence.new(Color3.new(1, 1, 1), Theme.Accent),
 		Parent = hrp,
 	})
-
 	if takeoff and Fly.effects then
 		local hit = groundCast(hrp.Position, 12, { char, getFxFolder() })
-		if hit then
-			spawnShockwave(hit.Position, 14, Color3.fromRGB(200, 215, 255), 0.8)
-		end
+		if hit then spawnShockwave(hit.Position, 14, Color3.fromRGB(200, 215, 255), 0.8) end
 	end
-
 	Fly.state = "active"
 	fly.conn = RunService.RenderStepped:Connect(flyStep)
 end
@@ -1105,58 +975,86 @@ track(LocalPlayer.CharacterAdded:Connect(function(char)
 	if Fly.enabled then
 		char:WaitForChild("HumanoidRootPart", 10)
 		char:WaitForChild("Humanoid", 10)
-		if Fly.enabled then
-			startFly(false)
-		end
+		if Fly.enabled then startFly(false) end
 	end
 end))
 
 ----------------------------------------------------------------------
--- MAGNET + FORMATION
+-- MAGNET + FORMATION (with WALL)
 ----------------------------------------------------------------------
 local Magnet = {
 	enabled = false,
 	count = CONFIG.Magnet.PartCount,
 	radius = CONFIG.Magnet.Radius,
-	shapes = { "Circle", "Sphere", "Cube", "Helix" },
+	shapes = { "Circle", "Sphere", "Cube", "Helix", "Wall" },
 	shape = 1,
 	spin = false,
 	spinSpeed = CONFIG.Magnet.SpinSpeed,
 	dirty = false,
+	wallDir = 1, -- index into WallDirs
 }
+
+-- Direction presets for Wall formation
+local WallDirs = {
+	{ name = "Forward",  calc = function(cf) return cf.LookVector end },
+	{ name = "Backward", calc = function(cf) return -cf.LookVector end },
+	{ name = "Right",    calc = function(cf) return cf.RightVector end },
+	{ name = "Left",     calc = function(cf) return -cf.RightVector end },
+	{ name = "Up",       calc = function(cf) return cf.UpVector end },
+	{ name = "Down",     calc = function(cf) return -cf.UpVector end },
+}
+
 local captured = {}
 local capturedSet = {}
 local magnetConn
 local spinAngle, lastScan, lastSim = 0, 0, 0
 
 local function claimSimulation()
-	pcall(function()
-		LocalPlayer.MaximumSimulationRadius = math.huge
-	end)
-	pcall(function()
-		sethiddenproperty(LocalPlayer, "SimulationRadius", math.huge)
-	end)
+	pcall(function() LocalPlayer.MaximumSimulationRadius = math.huge end)
+	pcall(function() sethiddenproperty(LocalPlayer, "SimulationRadius", math.huge) end)
 end
 
 local function norm(k, side)
-	if side > 1 then
-		return (k / (side - 1)) * 2 - 1
-	end
+	if side > 1 then return (k / (side - 1)) * 2 - 1 end
 	return 0
 end
 
-local function formationOffset(shape, i, n, r, rot)
+local function formationOffset(shape, i, n, r, rot, camCF)
+	-- WALL: build a flat grid in front of (or around) the player, oriented by WallDirs
+	if shape == "Wall" then
+		camCF = camCF or CFrame.new()
+		local dirDef = WallDirs[Magnet.wallDir] or WallDirs[1]
+		local normal = dirDef.calc(camCF)
+		-- Choose an "up" reference that isn't parallel to the normal
+		local up = math.abs(normal.Y) > 0.95 and camCF.RightVector or Vector3.yAxis
+		local right = normal:Cross(up)
+		if right.Magnitude < 1e-3 then right = Vector3.xAxis end
+		right = right.Unit
+		local upVec = right:Cross(normal)
+		if upVec.Magnitude < 1e-3 then upVec = Vector3.yAxis end
+		upVec = upVec.Unit
+
+		local side = math.max(1, math.ceil(math.sqrt(n)))
+		local col = (i - 1) % side
+		local row = math.floor((i - 1) / side)
+		-- r is treated as "half-width" of the wall; spacing keeps it tightly packed
+		local wallWidth = r * 2
+		local cell = wallWidth / side
+		local ox = (col - (side - 1) / 2) * cell
+		local oy = (row - (side - 1) / 2) * cell
+		local wallDist = CONFIG.Magnet.WallDistance
+		return normal * wallDist + right * ox + upVec * oy
+	end
+
 	local v
 	if shape == "Circle" then
 		local a = (i / n) * math.pi * 2
 		v = Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
-
 	elseif shape == "Sphere" then
 		local y = 1 - 2 * (i - 0.5) / n
 		local rad = math.sqrt(math.max(0, 1 - y * y))
 		local theta = i * 2.399963229728653
 		v = Vector3.new(math.cos(theta) * rad, y, math.sin(theta) * rad) * r
-
 	elseif shape == "Cube" then
 		local idx = i - 1
 		local face = idx % 6
@@ -1171,13 +1069,11 @@ local function formationOffset(shape, i, n, r, rot)
 		elseif face == 4 then v = Vector3.new(u, w, 1)
 		else v = Vector3.new(u, w, -1) end
 		v = v * r
-
-	else
+	else -- Helix
 		local f = n > 1 and (i - 1) / (n - 1) or 0.5
 		local a = f * math.pi * 2 * 3
 		v = Vector3.new(math.cos(a) * r, (f * 2 - 1) * r, math.sin(a) * r)
 	end
-
 	return CFrame.Angles(0, rot, 0) * v
 end
 
@@ -1186,43 +1082,31 @@ local function release(entry)
 	if entry.bp then entry.bp:Destroy() end
 	if entry.bg then entry.bg:Destroy() end
 	for _, p in ipairs(entry.parts) do
-		if p.part.Parent then
-			p.part.CanCollide = p.cc
-		end
+		if p.part.Parent then p.part.CanCollide = p.cc end
 	end
 end
 
 local function capture(root)
 	local mass = math.max(root.AssemblyMass, 0.05)
-
 	local bp = new("BodyPosition", {
 		Name = "MT_BP",
 		MaxForce = Vector3.one * mass * 2000,
-		P = mass * 400,
-		D = mass * 45,
-		Position = root.Position,
-		Parent = root,
+		P = mass * 400, D = mass * 45,
+		Position = root.Position, Parent = root,
 	})
 	local bg = new("BodyGyro", {
 		Name = "MT_BG",
 		MaxTorque = Vector3.one * math.max(4e5, mass * 4e4),
-		P = 3e3,
-		D = 3e2,
-		CFrame = root.CFrame,
-		Parent = root,
+		P = 3e3, D = 3e2, CFrame = root.CFrame, Parent = root,
 	})
-
 	local parts = {}
-	local ok, connected = pcall(function()
-		return root:GetConnectedParts(true)
-	end)
+	local ok, connected = pcall(function() return root:GetConnectedParts(true) end)
 	for _, p in ipairs(ok and connected or { root }) do
 		if p:IsA("BasePart") then
 			parts[#parts + 1] = { part = p, cc = p.CanCollide }
 			p.CanCollide = false
 		end
 	end
-
 	local entry = { root = root, bp = bp, bg = bg, parts = parts, maxForce = bp.MaxForce, far = false }
 	capturedSet[root] = entry
 	return entry
@@ -1239,17 +1123,12 @@ local function refreshCaptures()
 		end
 	end
 	captured = alive
-
 	while #captured > Magnet.count do
 		release(table.remove(captured))
 	end
-
 	if #captured < Magnet.count then
 		local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-		if not hrp then
-			return
-		end
-
+		if not hrp then return end
 		local excluded = buildExcluded()
 		local seen, found = {}, {}
 		for _, obj in ipairs(Workspace:GetDescendants()) do
@@ -1263,11 +1142,7 @@ local function refreshCaptures()
 				end
 			end
 		end
-
-		table.sort(found, function(a, b)
-			return a.dist < b.dist
-		end)
-
+		table.sort(found, function(a, b) return a.dist < b.dist end)
 		for i = 1, math.min(Magnet.count - #captured, #found) do
 			captured[#captured + 1] = capture(found[i].root)
 		end
@@ -1276,17 +1151,13 @@ end
 
 local function magnetStep(dt)
 	local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-	if not hrp then
-		return
-	end
-
+	if not hrp then return end
 	local now = os.clock()
 	if now - lastSim > 1 then
 		lastSim = now
 		claimSimulation()
 	end
 
-	-- FIX: aggressive rescans so newly spawned / newly streamed-in parts get pulled in
 	local wantScan = Magnet.dirty or CONFIG.Magnet.Unlimited or #captured < Magnet.count
 	if wantScan and now - lastScan > (Magnet.dirty and 0.25 or CONFIG.Magnet.ScanInterval) then
 		Magnet.dirty = false
@@ -1296,8 +1167,21 @@ local function magnetStep(dt)
 
 	spinAngle += dt * Magnet.spinSpeed
 
+	-- Redirect-aware center
+	local center
+	if Redirect.mode == "target" and Target.player and Target.player.Character then
+		local thrp = Target.player.Character:FindFirstChild("HumanoidRootPart")
+		center = thrp and thrp.Position or hrp.Position
+	elseif Redirect.mode == "point" and Redirect.point then
+		center = Redirect.point
+	else
+		center = hrp.Position
+	end
+
+	local cam = Workspace.CurrentCamera
+	local camCF = cam and cam.CFrame or CFrame.new()
+
 	local n = #captured
-	local center = hrp.Position
 	local shape = Magnet.shapes[Magnet.shape]
 	local rot = now * 0.5
 	local needsPrune = false
@@ -1305,12 +1189,11 @@ local function magnetStep(dt)
 	for i, e in ipairs(captured) do
 		local r = e.root
 		if r.Parent and e.bp.Parent == r and e.bg.Parent == r then
-			local goal = center + formationOffset(shape, i, n, Magnet.radius, rot)
+			local goal = center + formationOffset(shape, i, n, Magnet.radius, rot, camCF)
 			local delta = goal - r.Position
 			local dist = delta.Magnitude
 			local farLimit = CONFIG.Magnet.FarDistance
 			if dist > farLimit or (e.far and dist > farLimit * 0.75) then
-				-- No range limit: pull straight at max speed from any distance
 				e.far = true
 				e.bp.MaxForce = Vector3.zero
 				r.AssemblyLinearVelocity = delta.Unit * math.clamp(dist * 3, 150, CONFIG.Magnet.MaxPullSpeed)
@@ -1319,7 +1202,10 @@ local function magnetStep(dt)
 				e.bp.MaxForce = e.maxForce
 			end
 			e.bp.Position = goal
-			if Magnet.spin then
+			-- For Wall formation: keep parts axis-aligned so the wall stays flat & tight
+			if shape == "Wall" then
+				e.bg.CFrame = CFrame.new()
+			elseif Magnet.spin then
 				e.bg.CFrame = CFrame.Angles(0, spinAngle + i * 0.5, 0)
 			else
 				e.bg.CFrame = CFrame.new()
@@ -1328,26 +1214,18 @@ local function magnetStep(dt)
 			needsPrune = true
 		end
 	end
-
-	if needsPrune then
-		Magnet.dirty = true
-	end
+	if needsPrune then Magnet.dirty = true end
 end
 
 local function releaseAll()
-	for _, e in ipairs(captured) do
-		release(e)
-	end
+	for _, e in ipairs(captured) do release(e) end
 	captured = {}
 	capturedSet = {}
 end
 
 local function setMagnet(on)
 	Magnet.enabled = on
-	if magnetConn then
-		magnetConn:Disconnect()
-		magnetConn = nil
-	end
+	if magnetConn then magnetConn:Disconnect() magnetConn = nil end
 	if on then
 		claimSimulation()
 		Magnet.dirty = true
@@ -1374,9 +1252,7 @@ local ESP = {
 
 local function clearESP(plr)
 	local e = ESP.objects[plr]
-	if not e then
-		return
-	end
+	if not e then return end
 	ESP.objects[plr] = nil
 	if e.died then e.died:Disconnect() end
 	if e.highlight then e.highlight:Destroy() end
@@ -1385,27 +1261,17 @@ end
 
 local function applyESP(plr)
 	clearESP(plr)
-	if not ESP.enabled or plr == LocalPlayer then
-		return
-	end
+	if not ESP.enabled or plr == LocalPlayer then return end
 	local char = plr.Character
-	if not char then
-		return
-	end
-
+	if not char then return end
 	local entry = {}
 	ESP.objects[plr] = entry
-
 	task.spawn(function()
 		local hum = char:WaitForChild("Humanoid", 10)
 		local head = char:WaitForChild("Head", 10)
-		if ESP.objects[plr] ~= entry or plr.Character ~= char or not hum or hum.Health <= 0 then
-			return
-		end
-
+		if ESP.objects[plr] ~= entry or plr.Character ~= char or not hum or hum.Health <= 0 then return end
 		entry.highlight = new("Highlight", {
-			Name = "MT_ESP",
-			Adornee = char,
+			Name = "MT_ESP", Adornee = char,
 			DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
 			FillColor = ColorPresets[ESP.fillIndex][2],
 			OutlineColor = ColorPresets[ESP.outlineIndex][2],
@@ -1413,35 +1279,22 @@ local function applyESP(plr)
 			OutlineTransparency = ESP.outlineTransparency,
 			Parent = espFolder,
 		})
-
 		if head then
 			local bb = new("BillboardGui", {
-				Name = "MT_Name",
-				Adornee = head,
-				AlwaysOnTop = true,
-				Size = UDim2.fromOffset(200, 30),
-				StudsOffset = Vector3.new(0, 2.5, 0),
-				Enabled = ESP.showNames,
-				Parent = espFolder,
+				Name = "MT_Name", Adornee = head, AlwaysOnTop = true,
+				Size = UDim2.fromOffset(200, 30), StudsOffset = Vector3.new(0, 2.5, 0),
+				Enabled = ESP.showNames, Parent = espFolder,
 			})
 			new("TextLabel", {
-				Size = UDim2.fromScale(1, 1),
-				BackgroundTransparency = 1,
-				Font = Enum.Font.GothamBold,
-				Text = plr.DisplayName,
-				TextColor3 = Color3.new(1, 1, 1),
-				TextStrokeColor3 = Color3.new(0, 0, 0),
-				TextStrokeTransparency = 0.4,
-				TextSize = 14,
-				Parent = bb,
+				Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+				Font = Enum.Font.GothamBold, Text = plr.DisplayName,
+				TextColor3 = Color3.new(1, 1, 1), TextStrokeColor3 = Color3.new(0, 0, 0),
+				TextStrokeTransparency = 0.4, TextSize = 14, Parent = bb,
 			})
 			entry.billboard = bb
 		end
-
 		entry.died = hum.Died:Connect(function()
-			if ESP.objects[plr] == entry then
-				clearESP(plr)
-			end
+			if ESP.objects[plr] == entry then clearESP(plr) end
 		end)
 	end)
 end
@@ -1454,56 +1307,38 @@ local function updateESPStyle()
 			e.highlight.FillTransparency = ESP.fillTransparency
 			e.highlight.OutlineTransparency = ESP.outlineTransparency
 		end
-		if e.billboard then
-			e.billboard.Enabled = ESP.showNames
-		end
+		if e.billboard then e.billboard.Enabled = ESP.showNames end
 	end
 end
 
 local function hookPlayer(plr)
-	if plr == LocalPlayer or ESP.hooks[plr] then
-		return
-	end
+	if plr == LocalPlayer or ESP.hooks[plr] then return end
 	ESP.hooks[plr] = {
-		plr.CharacterAdded:Connect(function()
-			applyESP(plr)
-		end),
-		plr.CharacterRemoving:Connect(function()
-			clearESP(plr)
-		end),
+		plr.CharacterAdded:Connect(function() applyESP(plr) end),
+		plr.CharacterRemoving:Connect(function() clearESP(plr) end),
 	}
-	if plr.Character then
-		applyESP(plr)
-	end
+	if plr.Character then applyESP(plr) end
 end
 
 local function unhookPlayer(plr)
 	clearESP(plr)
 	local hooks = ESP.hooks[plr]
 	if hooks then
-		for _, c in ipairs(hooks) do
-			c:Disconnect()
-		end
+		for _, c in ipairs(hooks) do c:Disconnect() end
 		ESP.hooks[plr] = nil
 	end
 end
 
-for _, plr in ipairs(Players:GetPlayers()) do
-	hookPlayer(plr)
-end
+for _, plr in ipairs(Players:GetPlayers()) do hookPlayer(plr) end
 track(Players.PlayerAdded:Connect(hookPlayer))
 track(Players.PlayerRemoving:Connect(unhookPlayer))
 
 local function setESP(on)
 	ESP.enabled = on
 	if on then
-		for _, plr in ipairs(Players:GetPlayers()) do
-			applyESP(plr)
-		end
+		for _, plr in ipairs(Players:GetPlayers()) do applyESP(plr) end
 	else
-		for plr in pairs(ESP.objects) do
-			clearESP(plr)
-		end
+		for plr in pairs(ESP.objects) do clearESP(plr) end
 	end
 end
 
@@ -1534,20 +1369,13 @@ local function addObj(part)
 	local color = ColorPresets[ObjESP.colorIndex][2]
 	ObjESP.objects[part] = {
 		box = new("BoxHandleAdornment", {
-			Adornee = part,
-			AlwaysOnTop = true,
-			ZIndex = 5,
+			Adornee = part, AlwaysOnTop = true, ZIndex = 5,
 			Size = part.Size + Vector3.new(0.05, 0.05, 0.05),
-			Color3 = color,
-			Transparency = ObjESP.fillTransparency,
-			Parent = objFolder,
+			Color3 = color, Transparency = ObjESP.fillTransparency, Parent = objFolder,
 		}),
 		sel = new("SelectionBox", {
-			Adornee = part,
-			Color3 = color,
-			LineThickness = 0.04,
-			SurfaceTransparency = 1,
-			Parent = objFolder,
+			Adornee = part, Color3 = color, LineThickness = 0.04,
+			SurfaceTransparency = 1, Parent = objFolder,
 		}),
 	}
 end
@@ -1556,7 +1384,6 @@ local function scanObjects()
 	local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 	local origin = hrp and hrp.Position or Workspace.CurrentCamera.CFrame.Position
 	local excluded = buildExcluded()
-
 	local found = {}
 	for _, obj in ipairs(Workspace:GetDescendants()) do
 		if obj:IsA("BasePart") and not obj.Anchored then
@@ -1566,23 +1393,14 @@ local function scanObjects()
 			end
 		end
 	end
-	table.sort(found, function(a, b)
-		return a.dist < b.dist
-	end)
-
+	table.sort(found, function(a, b) return a.dist < b.dist end)
 	local keep = {}
-	for i = 1, math.min(ObjESP.max, #found) do
-		keep[found[i].part] = true
-	end
+	for i = 1, math.min(ObjESP.max, #found) do keep[found[i].part] = true end
 	for part in pairs(ObjESP.objects) do
-		if not keep[part] or not part.Parent or part.Anchored then
-			clearObj(part)
-		end
+		if not keep[part] or not part.Parent or part.Anchored then clearObj(part) end
 	end
 	for part in pairs(keep) do
-		if not ObjESP.objects[part] then
-			addObj(part)
-		end
+		if not ObjESP.objects[part] then addObj(part) end
 	end
 end
 
@@ -1597,10 +1415,7 @@ end
 
 local function setObjectESP(on)
 	ObjESP.enabled = on
-	if objConn then
-		objConn:Disconnect()
-		objConn = nil
-	end
+	if objConn then objConn:Disconnect() objConn = nil end
 	if on then
 		ObjESP.last = 0
 		objConn = RunService.Heartbeat:Connect(function()
@@ -1611,10 +1426,292 @@ local function setObjectESP(on)
 			end
 		end)
 	else
-		for part in pairs(ObjESP.objects) do
-			clearObj(part)
+		for part in pairs(ObjESP.objects) do clearObj(part) end
+	end
+end
+
+----------------------------------------------------------------------
+-- ADVANCED: Target ESP / Wall-In / Throw
+----------------------------------------------------------------------
+local TARGET_COLOR = Color3.fromRGB(255, 60, 60)
+local TARGET_OUTLINE = Color3.fromRGB(255, 255, 255)
+
+local function screenRay(screenPos)
+	local cam = Workspace.CurrentCamera
+	local ray = cam:ViewportPointToRay(screenPos.X, screenPos.Y)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = {
+		LocalPlayer.Character, getFxFolder(), espFolder, objFolder, advFolder
+	}
+	return Workspace:Raycast(ray.Origin, ray.Direction * 5000, params)
+end
+
+local function getPlayerFromPart(part)
+	if not part then return nil end
+	local m = part:FindFirstAncestorOfClass("Model")
+	while m do
+		local plr = Players:GetPlayerFromCharacter(m)
+		if plr then return plr end
+		m = m:FindFirstAncestorOfClass("Model")
+	end
+	return nil
+end
+
+-- Target ESP
+local targetHooks = {}
+
+local function clearTargetVisuals()
+	if Target.highlight then Target.highlight:Destroy() Target.highlight = nil end
+	if Target.billboard then Target.billboard:Destroy() Target.billboard = nil end
+	for _, c in ipairs(targetHooks) do pcall(function() c:Disconnect() end) end
+	targetHooks = {}
+end
+
+local function applyTargetVisuals()
+	clearTargetVisuals()
+	local plr = Target.player
+	if not plr or not plr.Character then return end
+	if not Target.show then return end
+	local char = plr.Character
+	local head = char:FindFirstChild("Head")
+	Target.highlight = new("Highlight", {
+		Name = "MT_Target", Adornee = char,
+		DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
+		FillColor = TARGET_COLOR, OutlineColor = TARGET_OUTLINE,
+		FillTransparency = 0.35, OutlineTransparency = 0.1,
+		Parent = advFolder,
+	})
+	if head then
+		local bb = new("BillboardGui", {
+			Name = "MT_TargetMark", Adornee = head, AlwaysOnTop = true,
+			Size = UDim2.fromOffset(140, 26),
+			StudsOffset = Vector3.new(0, 3.6, 0), Parent = advFolder,
+		})
+		new("TextLabel", {
+			Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+			Font = Enum.Font.GothamBold,
+			Text = "> " .. plr.DisplayName .. " <",
+			TextColor3 = TARGET_COLOR, TextStrokeColor3 = Color3.new(0, 0, 0),
+			TextStrokeTransparency = 0.15, TextSize = 16, Parent = bb,
+		})
+		Target.billboard = bb
+	end
+end
+
+local function setTarget(plr)
+	if Target.player == plr then plr = nil end
+	clearTargetVisuals()
+	Target.player = plr
+	if not plr then return end
+	applyTargetVisuals()
+	targetHooks[#targetHooks + 1] = plr.CharacterAdded:Connect(function()
+		if Target.player == plr then
+			task.wait(0.3)
+			if Target.player == plr then applyTargetVisuals() end
+		end
+	end)
+	targetHooks[#targetHooks + 1] = plr.CharacterRemoving:Connect(function()
+		if Target.player == plr then clearTargetVisuals() end
+	end)
+end
+
+-- Throw
+local Throw = { pickMode = false, aiming = false, part = nil, ghost = nil, speed = 320 }
+local throwUiState = { label = nil }
+
+local function clearThrowGhost()
+	if Throw.ghost then Throw.ghost:Destroy() Throw.ghost = nil end
+end
+
+local function cancelThrow()
+	Throw.pickMode = false
+	Throw.aiming = false
+	Throw.part = nil
+	clearThrowGhost()
+	if throwUiState.label then throwUiState.label.Text = "Throw: idle" end
+end
+
+local function startPick()
+	Throw.pickMode = true
+	Throw.aiming = false
+	Throw.part = nil
+	clearThrowGhost()
+	if throwUiState.label then throwUiState.label.Text = "Pick: click an object..." end
+end
+
+local function confirmPick(part)
+	Throw.part = part
+	Throw.pickMode = false
+	Throw.aiming = true
+	clearThrowGhost()
+	Throw.ghost = new("SelectionBox", {
+		Adornee = part, Color3 = Color3.fromRGB(255, 210, 0),
+		LineThickness = 0.08, SurfaceTransparency = 1, Parent = advFolder,
+	})
+	if throwUiState.label then throwUiState.label.Text = "Aim: click destination or player" end
+end
+
+local function doThrow(part, destVec)
+	if not part or not part.Parent then return end
+	local delta = destVec - part.Position
+	if delta.Magnitude < 0.5 then return end
+	local dir = delta.Unit
+	local bv = new("BodyVelocity", {
+		Name = "MT_ThrowBV", MaxForce = Vector3.one * 1e9, P = 1e5,
+		Velocity = dir * Throw.speed, Parent = part,
+	})
+	local bg = new("BodyGyro", {
+		Name = "MT_ThrowBG", MaxTorque = Vector3.one * 1e9,
+		P = 3e4, D = 500,
+		CFrame = CFrame.lookAt(part.Position, part.Position + dir), Parent = part,
+	})
+	local origCollide = part.CanCollide
+	part.CanCollide = false
+	task.delay(2.5, function()
+		if bv then bv:Destroy() end
+		if bg then bg:Destroy() end
+		if part and part.Parent then part.CanCollide = origCollide end
+	end)
+end
+
+track(UserInputService.InputBegan:Connect(function(input, processed)
+	if processed then return end
+	if input.UserInputType ~= Enum.UserInputType.MouseButton1
+		and input.UserInputType ~= Enum.UserInputType.Touch then return end
+	if UserInputService:GetFocusedTextBox() then return end
+	if not Throw.pickMode and not Throw.aiming then return end
+	local pos = input.Position
+	task.defer(function()
+		local hit = screenRay(Vector2.new(pos.X, pos.Y))
+		if Throw.pickMode then
+			if hit and hit.Instance and hit.Instance:IsA("BasePart") and not hit.Instance.Anchored then
+				confirmPick(hit.Instance)
+			elseif throwUiState.label then
+				throwUiState.label.Text = "Pick: not a movable part"
+			end
+		elseif Throw.aiming then
+			local part = Throw.part
+			if not part or not part.Parent then cancelThrow() return end
+			if not hit then
+				local cam = Workspace.CurrentCamera
+				doThrow(part, cam.CFrame.Position + cam.CFrame.LookVector * 500)
+				cancelThrow()
+				return
+			end
+			local plr = getPlayerFromPart(hit.Instance)
+			if plr and plr.Character then
+				local thrp = plr.Character:FindFirstChild("HumanoidRootPart")
+				doThrow(part, thrp and thrp.Position or hit.Position)
+			else
+				doThrow(part, hit.Position)
+			end
+			cancelThrow()
+		end
+	end)
+end))
+
+-- Wall-In
+local Wall = { enabled = false, entries = {}, conn = nil, last = 0 }
+
+local function wallRelease(e)
+	if e.bp then e.bp:Destroy() end
+	if e.bg then e.bg:Destroy() end
+	for _, p in ipairs(e.parts) do
+		if p.part.Parent then p.part.CanCollide = p.cc end
+	end
+end
+
+local function wallReleaseAll()
+	for _, e in ipairs(Wall.entries) do wallRelease(e) end
+	Wall.entries = {}
+end
+
+local function wallCapture(root)
+	local mass = math.max(root.AssemblyMass, 0.05)
+	local bp = new("BodyPosition", {
+		Name = "MT_WallBP", MaxForce = Vector3.one * mass * 6000,
+		P = mass * 900, D = mass * 70, Position = root.Position, Parent = root,
+	})
+	local bg = new("BodyGyro", {
+		Name = "MT_WallBG", MaxTorque = Vector3.one * math.max(1e5, mass * 4e4),
+		P = 3e3, D = 3e2, CFrame = root.CFrame, Parent = root,
+	})
+	local parts = {}
+	local ok, connected = pcall(function() return root:GetConnectedParts(true) end)
+	for _, p in ipairs(ok and connected or { root }) do
+		if p:IsA("BasePart") then
+			parts[#parts + 1] = { part = p, cc = p.CanCollide }
+			p.CanCollide = false
 		end
 	end
+	return { root = root, bp = bp, bg = bg, parts = parts }
+end
+
+local function wallStep()
+	local plr = Target.player
+	if not plr or not plr.Character then return end
+	local thrp = plr.Character:FindFirstChild("HumanoidRootPart")
+	if not thrp then return end
+	local center = thrp.Position
+	local now = os.clock()
+
+	if now - Wall.last > 1.5 then
+		Wall.last = now
+		local alive = {}
+		for _, e in ipairs(Wall.entries) do
+			if e.root.Parent and e.bp.Parent == e.root and e.bg.Parent == e.root then
+				alive[#alive + 1] = e
+			else
+				wallRelease(e)
+			end
+		end
+		Wall.entries = alive
+		local seen = {}
+		for _, e in ipairs(Wall.entries) do seen[e.root] = true end
+		local excluded = buildExcluded()
+		local radius = 60
+		for _, obj in ipairs(Workspace:GetDescendants()) do
+			if obj:IsA("BasePart") and not obj.Anchored then
+				local root = obj.AssemblyRootPart
+				if root and not root.Anchored and not seen[root]
+					and not isInsideAny(root, excluded) then
+					if (root.Position - center).Magnitude < radius then
+						seen[root] = true
+						Wall.entries[#Wall.entries + 1] = wallCapture(root)
+					end
+				end
+			end
+		end
+	end
+
+	local n = #Wall.entries
+	if n == 0 then return end
+	local shell = 3.2
+	for i, e in ipairs(Wall.entries) do
+		local y = 1 - 2 * (i - 0.5) / n
+		local rad = math.sqrt(math.max(0, 1 - y * y))
+		local theta = i * 2.399963229728653
+		local offset = Vector3.new(math.cos(theta) * rad, y, math.sin(theta) * rad) * shell
+		e.bp.Position = center + offset
+		e.bg.CFrame = CFrame.new()
+	end
+end
+
+local function setWall(on)
+	Wall.enabled = on
+	if Wall.conn then Wall.conn:Disconnect() Wall.conn = nil end
+	if on then
+		if not Target.player then
+			Wall.enabled = false
+			return false
+		end
+		Wall.last = 0
+		Wall.conn = RunService.Heartbeat:Connect(wallStep)
+	else
+		wallReleaseAll()
+	end
+	return true
 end
 
 ----------------------------------------------------------------------
@@ -1628,8 +1725,10 @@ local Settings = {
 	quickLocked = CONFIG.Quick.Locked,
 	launcherPos = nil,
 	window = nil,
-	flyMoveMode = CONFIG.Fly.MoveMode, -- NEW: persisted
-	magnetUnlimited = CONFIG.Magnet.Unlimited, -- NEW
+	flyMoveMode = CONFIG.Fly.MoveMode,
+	magnetUnlimited = CONFIG.Magnet.Unlimited,
+	wallDir = 1,
+	advWindow = nil,
 }
 
 local function fileApi()
@@ -1650,77 +1749,59 @@ local function tableToUDim(t)
 end
 
 local function loadSettings()
-	if not fileApi() then
-		return
-	end
+	if not fileApi() then return end
 	local ok, data = pcall(function()
 		if isfile(CONFIG.SaveFile) then
 			return HttpService:JSONDecode(readfile(CONFIG.SaveFile))
 		end
 	end)
-	if not ok or type(data) ~= "table" then
-		return
-	end
+	if not ok or type(data) ~= "table" then return end
 
 	if type(data.hotkeys) == "table" then
 		for id, name in pairs(data.hotkeys) do
 			if name == "" then
 				Settings.hotkeys[id] = false
 			else
-				local okk, kc = pcall(function()
-					return Enum.KeyCode[name]
-				end)
-				if okk and kc then
-					Settings.hotkeys[id] = kc
-				end
+				local okk, kc = pcall(function() return Enum.KeyCode[name] end)
+				if okk and kc then Settings.hotkeys[id] = kc end
 			end
 		end
 	end
 	if type(data.quickVisible) == "table" then
-		for id, v in pairs(data.quickVisible) do
-			Settings.quickVisible[id] = v and true or false
-		end
+		for id, v in pairs(data.quickVisible) do Settings.quickVisible[id] = v and true or false end
 	end
 	if type(data.quickPos) == "table" then
 		for id, t in pairs(data.quickPos) do
-			if validPos(t) then
-				Settings.quickPos[id] = t
-			end
+			if validPos(t) then Settings.quickPos[id] = t end
 		end
 	end
 	if type(data.quickEnabled) == "boolean" then Settings.quickEnabled = data.quickEnabled end
 	if type(data.quickLocked) == "boolean" then Settings.quickLocked = data.quickLocked end
 	if validPos(data.launcherPos) then Settings.launcherPos = data.launcherPos end
-	if type(data.window) == "table" and validPos(data.window.pos) then
-		Settings.window = data.window
-	end
+	if type(data.window) == "table" and validPos(data.window.pos) then Settings.window = data.window end
+	if type(data.advWindow) == "table" and validPos(data.advWindow.pos) then Settings.advWindow = data.advWindow end
 	if data.flyMoveMode == "camera" or data.flyMoveMode == "plane" then
 		Settings.flyMoveMode = data.flyMoveMode
 	end
-	if type(data.magnetUnlimited) == "boolean" then
-		Settings.magnetUnlimited = data.magnetUnlimited
+	if type(data.magnetUnlimited) == "boolean" then Settings.magnetUnlimited = data.magnetUnlimited end
+	if type(data.wallDir) == "number" and data.wallDir >= 1 and data.wallDir <= #WallDirs then
+		Settings.wallDir = data.wallDir
 	end
 end
 
 loadSettings()
 for _, id in ipairs(CONFIG.Quick.Defaults) do
-	if Settings.quickVisible[id] == nil then
-		Settings.quickVisible[id] = true
-	end
+	if Settings.quickVisible[id] == nil then Settings.quickVisible[id] = true end
 end
 
--- Apply loaded settings to runtime
 Fly.moveMode = Settings.flyMoveMode
 CONFIG.Magnet.Unlimited = Settings.magnetUnlimited
+Magnet.wallDir = Settings.wallDir
 
 local function saveSettings()
-	if not fileApi() then
-		return
-	end
+	if not fileApi() then return end
 	local hk = {}
-	for id, v in pairs(Settings.hotkeys) do
-		hk[id] = v and v.Name or ""
-	end
+	for id, v in pairs(Settings.hotkeys) do hk[id] = v and v.Name or "" end
 	local data = {
 		hotkeys = hk,
 		quickVisible = Settings.quickVisible,
@@ -1729,8 +1810,10 @@ local function saveSettings()
 		quickLocked = Settings.quickLocked,
 		launcherPos = Settings.launcherPos,
 		window = { pos = udimToTable(root.Position), collapsed = Win.collapsed, pinned = Win.pinned },
+		advWindow = { pos = udimToTable(advRoot.Position) },
 		flyMoveMode = Fly.moveMode,
 		magnetUnlimited = CONFIG.Magnet.Unlimited,
+		wallDir = Magnet.wallDir,
 	}
 	pcall(function()
 		writefile(CONFIG.SaveFile, HttpService:JSONEncode(data))
@@ -1742,80 +1825,33 @@ local function saveSoon()
 	saveToken += 1
 	local mine = saveToken
 	task.delay(0.6, function()
-		if mine == saveToken then
-			saveSettings()
-		end
+		if mine == saveToken then saveSettings() end
 	end)
 end
 Win.onMoved = saveSoon
-
-----------------------------------------------------------------------
--- Cleanup
-----------------------------------------------------------------------
-local function cleanup()
-	pcall(saveSettings)
-
-	Fly.enabled = false
-	stopFly()
-	setMagnet(false)
-	setObjectESP(false)
-
-	ESP.enabled = false
-	for plr in pairs(ESP.objects) do
-		clearESP(plr)
-	end
-	for plr in pairs(ESP.hooks) do
-		unhookPlayer(plr)
-	end
-
-	for _, c in ipairs(connections) do
-		c:Disconnect()
-	end
-	connections = {}
-
-	local cam = Workspace.CurrentCamera
-	local fx = cam and cam:FindFirstChild("MT_FX")
-	if fx then fx:Destroy() end
-	if objFolder then objFolder:Destroy() end
-	if espFolder then espFolder:Destroy() end
-	if gui then gui:Destroy() end
-	env.__MultiToolCleanup = nil
-end
-
-env.__MultiToolCleanup = cleanup
 
 ----------------------------------------------------------------------
 -- Drag helper
 ----------------------------------------------------------------------
 local function makeDraggable(obj, onClick, canDrag, onMoved)
 	local pressed, moved, startMouse, startPos = false, false, nil, nil
-
 	obj.InputBegan:Connect(function(input)
 		if input.UserInputType ~= Enum.UserInputType.MouseButton1
-			and input.UserInputType ~= Enum.UserInputType.Touch then
-			return
-		end
+			and input.UserInputType ~= Enum.UserInputType.Touch then return end
 		pressed, moved = true, false
 		startMouse, startPos = input.Position, obj.Position
 		input.Changed:Connect(function()
 			if input.UserInputState == Enum.UserInputState.End and pressed then
 				pressed = false
-				if moved then
-					onMoved()
-				elseif onClick then
-					onClick()
-				end
+				if moved then onMoved() elseif onClick then onClick() end
 			end
 		end)
 	end)
-
 	track(UserInputService.InputChanged:Connect(function(input)
 		if pressed and (input.UserInputType == Enum.UserInputType.MouseMovement
 			or input.UserInputType == Enum.UserInputType.Touch) then
 			local d = input.Position - startMouse
-			if not moved and d.Magnitude > 5 and canDrag() then
-				moved = true
-			end
+			if not moved and d.Magnitude > 5 and canDrag() then moved = true end
 			if moved then
 				obj.Position = UDim2.new(
 					startPos.X.Scale, startPos.X.Offset + d.X,
@@ -1836,23 +1872,13 @@ local launcher = new("TextButton", {
 	Size = UDim2.fromOffset(44, 44),
 	Position = Settings.launcherPos and tableToUDim(Settings.launcherPos) or UDim2.new(0, 16, 0.5, -22),
 	BackgroundColor3 = Theme.Accent,
-	AutoButtonColor = false,
-	Font = Enum.Font.GothamBold,
-	Text = "MT",
-	TextColor3 = Theme.Text,
-	TextSize = 14,
-	Visible = false,
-	ZIndex = 5,
-	Parent = gui,
+	AutoButtonColor = false, Font = Enum.Font.GothamBold, Text = "MT",
+	TextColor3 = Theme.Text, TextSize = 14, Visible = false, ZIndex = 5, Parent = gui,
 })
 corner(launcher, 22)
 new("UIStroke", { Color = Color3.new(1, 1, 1), Thickness = 1, Transparency = 0.7, Parent = launcher })
-launcher.MouseEnter:Connect(function()
-	launcher.BackgroundColor3 = lighten(Theme.Accent, 0.15)
-end)
-launcher.MouseLeave:Connect(function()
-	launcher.BackgroundColor3 = Theme.Accent
-end)
+launcher.MouseEnter:Connect(function() launcher.BackgroundColor3 = lighten(Theme.Accent, 0.15) end)
+launcher.MouseLeave:Connect(function() launcher.BackgroundColor3 = Theme.Accent end)
 
 local pinHover, collapseHover, closeHover = false, false, false
 local function renderTitleButtons()
@@ -1884,14 +1910,10 @@ local function tweenWindowSize(toSize, duration, onDone)
 				from.X.Offset + (toSize.X.Offset - from.X.Offset) * e,
 				from.Y.Offset + (toSize.Y.Offset - from.Y.Offset) * e
 			)
-			if a >= 1 then
-				break
-			end
+			if a >= 1 then break end
 			RunService.RenderStepped:Wait()
 		end
-		if id == Win.tweenId and onDone then
-			onDone()
-		end
+		if id == Win.tweenId and onDone then onDone() end
 	end)
 end
 
@@ -1912,9 +1934,7 @@ local function setCollapsed(c, instant)
 			root.Size = UDim2.fromOffset(WIN_W, WIN_H)
 			content.Visible = true
 		else
-			tweenWindowSize(UDim2.fromOffset(WIN_W, WIN_H), 0.18, function()
-				content.Visible = true
-			end)
+			tweenWindowSize(UDim2.fromOffset(WIN_W, WIN_H), 0.18, function() content.Visible = true end)
 		end
 	end
 	saveSoon()
@@ -1928,18 +1948,13 @@ local function setPinned(p)
 end
 
 local function setOpen(open)
-	if not open and Win.pinned then
-		flashPin()
-		return
-	end
+	if not open and Win.pinned then flashPin() return end
 	Win.open = open
 	root.Visible = open
 	launcher.Visible = not open
 end
 
-local function toggleMenu()
-	setOpen(not Win.open)
-end
+local function toggleMenu() setOpen(not Win.open) end
 
 pinBtn.MouseEnter:Connect(function() pinHover = true renderTitleButtons() end)
 pinBtn.MouseLeave:Connect(function() pinHover = false renderTitleButtons() end)
@@ -1947,29 +1962,18 @@ collapseBtn.MouseEnter:Connect(function() collapseHover = true renderTitleButton
 collapseBtn.MouseLeave:Connect(function() collapseHover = false renderTitleButtons() end)
 closeBtn.MouseEnter:Connect(function() closeHover = true renderTitleButtons() end)
 closeBtn.MouseLeave:Connect(function() closeHover = false renderTitleButtons() end)
-
-pinBtn.MouseButton1Click:Connect(function()
-	setPinned(not Win.pinned)
-end)
-collapseBtn.MouseButton1Click:Connect(function()
-	setCollapsed(not Win.collapsed)
-end)
-closeBtn.MouseButton1Click:Connect(function()
-	setOpen(false)
-end)
+pinBtn.MouseButton1Click:Connect(function() setPinned(not Win.pinned) end)
+collapseBtn.MouseButton1Click:Connect(function() setCollapsed(not Win.collapsed) end)
+closeBtn.MouseButton1Click:Connect(function() setOpen(false) end)
 renderTitleButtons()
 
-makeDraggable(launcher, function()
-	setOpen(true)
-end, function()
-	return true
-end, function()
+makeDraggable(launcher, function() setOpen(true) end, function() return true end, function()
 	Settings.launcherPos = udimToTable(launcher.Position)
 	saveSoon()
 end)
 
 ----------------------------------------------------------------------
--- Quick-button state helpers
+-- Quick-button helpers
 ----------------------------------------------------------------------
 local quickButtons = {}
 local quickMasterApi
@@ -1983,22 +1987,16 @@ end
 local function setQuickEnabled(on)
 	Settings.quickEnabled = on
 	updateQuickVisibility()
-	if quickMasterApi then
-		quickMasterApi.Visual(on)
-	end
+	if quickMasterApi then quickMasterApi.Visual(on) end
 	saveSoon()
 end
 
-local function toggleQuickButtons()
-	setQuickEnabled(not Settings.quickEnabled)
-end
+local function toggleQuickButtons() setQuickEnabled(not Settings.quickEnabled) end
 
 local formationBtn
 local function cycleFormation()
 	Magnet.shape = Magnet.shape % #Magnet.shapes + 1
-	if formationBtn then
-		formationBtn.SetText("Formation: " .. Magnet.shapes[Magnet.shape])
-	end
+	if formationBtn then formationBtn.SetText("Formation: " .. Magnet.shapes[Magnet.shape]) end
 end
 
 ----------------------------------------------------------------------
@@ -2015,13 +2013,11 @@ end
 
 registerAction("fly", {
 	label = "Fly", short = "Fly", kind = "toggle",
-	get = function() return Fly.enabled end,
-	set = setFly,
+	get = function() return Fly.enabled end, set = setFly,
 })
 registerAction("magnet", {
 	label = "Magnet", short = "Magnet", kind = "toggle",
-	get = function() return Magnet.enabled end,
-	set = setMagnet,
+	get = function() return Magnet.enabled end, set = setMagnet,
 })
 registerAction("spin", {
 	label = "Spin", short = "Spin", kind = "toggle",
@@ -2030,27 +2026,44 @@ registerAction("spin", {
 })
 registerAction("playerEsp", {
 	label = "Player ESP", short = "Players", kind = "toggle",
-	get = function() return ESP.enabled end,
-	set = setESP,
+	get = function() return ESP.enabled end, set = setESP,
 })
 registerAction("objectEsp", {
 	label = "Object ESP", short = "Objects", kind = "toggle",
-	get = function() return ObjESP.enabled end,
-	set = setObjectESP,
+	get = function() return ObjESP.enabled end, set = setObjectESP,
 })
 registerAction("cycleFormation", { label = "Cycle Formation", kind = "trigger", run = cycleFormation })
 registerAction("toggleMenu", { label = "Show / Hide Menu", kind = "trigger", run = toggleMenu })
 registerAction("toggleQuick", { label = "Show / Hide Quick Buttons", kind = "trigger", run = toggleQuickButtons })
+registerAction("wallIn", {
+	label = "Wall-In Target", short = "Wall", kind = "toggle",
+	get = function() return Wall.enabled end,
+	set = function(on)
+		if on then
+			if not Target.player then
+				for _, fn in ipairs(Actions["wallIn"].visuals) do fn(false) end
+				return
+			end
+			setWall(true)
+		else
+			setWall(false)
+		end
+	end,
+})
+registerAction("throwPick", {
+	label = "Pick Object to Throw", kind = "trigger",
+	run = function() startPick() end,
+})
+registerAction("clearTarget", {
+	label = "Clear Target", kind = "trigger",
+	run = function() setTarget(nil) end,
+})
 
 local function syncAction(id)
 	local a = Actions[id]
-	if a.kind ~= "toggle" then
-		return
-	end
+	if a.kind ~= "toggle" then return end
 	local on = a.get() and true or false
-	for _, fn in ipairs(a.visuals) do
-		fn(on)
-	end
+	for _, fn in ipairs(a.visuals) do fn(on) end
 end
 
 local function setAction(id, on)
@@ -2060,11 +2073,8 @@ end
 
 local function toggleAction(id)
 	local a = Actions[id]
-	if a.kind == "toggle" then
-		setAction(id, not a.get())
-	else
-		a.run()
-	end
+	if a.kind == "toggle" then setAction(id, not a.get())
+	else a.run() end
 end
 
 ----------------------------------------------------------------------
@@ -2072,16 +2082,10 @@ end
 ----------------------------------------------------------------------
 local hotkeys = {}
 for id, name in pairs(CONFIG.Hotkeys) do
-	local okk, kc = pcall(function()
-		return Enum.KeyCode[name]
-	end)
-	if okk and kc then
-		hotkeys[id] = kc
-	end
+	local okk, kc = pcall(function() return Enum.KeyCode[name] end)
+	if okk and kc then hotkeys[id] = kc end
 end
-for id, v in pairs(Settings.hotkeys) do
-	hotkeys[id] = v or nil
-end
+for id, v in pairs(Settings.hotkeys) do hotkeys[id] = v or nil end
 
 local RESERVED = {
 	[Enum.KeyCode.W] = true, [Enum.KeyCode.A] = true, [Enum.KeyCode.S] = true, [Enum.KeyCode.D] = true,
@@ -2105,23 +2109,16 @@ local function refreshBind(id)
 		r.keyBtn.BackgroundColor3 = waiting and Theme.Accent or Theme.Track
 	end
 	local q = quickButtons[id]
-	if q then
-		q.keyLbl.Text = hotkeys[id] and ("[" .. keyText(id) .. "]") or ""
-	end
+	if q then q.keyLbl.Text = hotkeys[id] and ("[" .. keyText(id) .. "]") or "" end
 end
 
 local function refreshAllBinds()
-	for id in pairs(Actions) do
-		refreshBind(id)
-	end
+	for id in pairs(Actions) do refreshBind(id) end
 end
 
 track(UserInputService.InputBegan:Connect(function(input)
-	if input.UserInputType ~= Enum.UserInputType.Keyboard then
-		return
-	end
+	if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
 	local kc = input.KeyCode
-
 	if listening then
 		local id = listening
 		listening = nil
@@ -2137,9 +2134,7 @@ track(UserInputService.InputBegan:Connect(function(input)
 			local r = bindRows[id]
 			if r then
 				r.keyBtn.Text = "Reserved"
-				task.delay(1, function()
-					refreshBind(id)
-				end)
+				task.delay(1, function() refreshBind(id) end)
 			end
 		elseif kc ~= Enum.KeyCode.Unknown then
 			for other, k in pairs(hotkeys) do
@@ -2155,15 +2150,9 @@ track(UserInputService.InputBegan:Connect(function(input)
 		end
 		return
 	end
-
-	if UserInputService:GetFocusedTextBox() then
-		return
-	end
+	if UserInputService:GetFocusedTextBox() then return end
 	for _, id in ipairs(ActionOrder) do
-		if hotkeys[id] == kc then
-			toggleAction(id)
-			break
-		end
+		if hotkeys[id] == kc then toggleAction(id) break end
 	end
 end))
 
@@ -2171,12 +2160,9 @@ end))
 -- Quick buttons
 ----------------------------------------------------------------------
 local QUICK_W, QUICK_H = 76, 40
-
 local toggleIds = {}
 for _, id in ipairs(ActionOrder) do
-	if Actions[id].kind == "toggle" then
-		toggleIds[#toggleIds + 1] = id
-	end
+	if Actions[id].kind == "toggle" then toggleIds[#toggleIds + 1] = id end
 end
 
 local function quickDefaultPos(index)
@@ -2192,64 +2178,37 @@ for index, id in ipairs(toggleIds) do
 		Name = "Quick_" .. id,
 		Size = UDim2.fromOffset(QUICK_W, QUICK_H),
 		Position = Settings.quickPos[id] and tableToUDim(Settings.quickPos[id]) or quickDefaultPos(index),
-		BackgroundColor3 = Theme.Element,
-		AutoButtonColor = false,
-		Text = "",
-		Visible = false,
-		ZIndex = 5,
-		Parent = gui,
+		BackgroundColor3 = Theme.Element, AutoButtonColor = false,
+		Text = "", Visible = false, ZIndex = 5, Parent = gui,
 	})
 	corner(btn, 8)
 	local stroke = new("UIStroke", { Color = Theme.Accent, Thickness = 1.2, Parent = btn })
 	new("TextLabel", {
-		Position = UDim2.fromOffset(0, 4),
-		Size = UDim2.new(1, 0, 0, 18),
-		BackgroundTransparency = 1,
-		Font = Enum.Font.GothamBold,
-		Text = a.short or a.label,
-		TextColor3 = Theme.Text,
-		TextSize = 12,
-		Parent = btn,
+		Position = UDim2.fromOffset(0, 4), Size = UDim2.new(1, 0, 0, 18),
+		BackgroundTransparency = 1, Font = Enum.Font.GothamBold,
+		Text = a.short or a.label, TextColor3 = Theme.Text, TextSize = 12, Parent = btn,
 	})
 	local keyLbl = new("TextLabel", {
-		Position = UDim2.fromOffset(0, 22),
-		Size = UDim2.new(1, 0, 0, 14),
-		BackgroundTransparency = 1,
-		Font = Enum.Font.Gotham,
-		Text = "",
-		TextColor3 = Theme.SubText,
-		TextSize = 10,
-		Parent = btn,
+		Position = UDim2.fromOffset(0, 22), Size = UDim2.new(1, 0, 0, 14),
+		BackgroundTransparency = 1, Font = Enum.Font.Gotham,
+		Text = "", TextColor3 = Theme.SubText, TextSize = 10, Parent = btn,
 	})
-
 	local on, hover = false, false
 	local function render()
 		local base = on and Theme.Red or Theme.Element
 		btn.BackgroundColor3 = hover and lighten(base) or base
 		stroke.Color = on and Theme.Red or Theme.Accent
 	end
-	btn.MouseEnter:Connect(function()
-		hover = true
-		render()
-	end)
-	btn.MouseLeave:Connect(function()
-		hover = false
-		render()
-	end)
-	a.visuals[#a.visuals + 1] = function(state)
-		on = state
-		render()
-	end
-
+	btn.MouseEnter:Connect(function() hover = true render() end)
+	btn.MouseLeave:Connect(function() hover = false render() end)
+	a.visuals[#a.visuals + 1] = function(state) on = state render() end
 	quickButtons[id] = { btn = btn, keyLbl = keyLbl }
-	makeDraggable(btn, function()
-		toggleAction(id)
-	end, function()
-		return not Settings.quickLocked
-	end, function()
-		Settings.quickPos[id] = udimToTable(btn.Position)
-		saveSoon()
-	end)
+	makeDraggable(btn, function() toggleAction(id) end,
+		function() return not Settings.quickLocked end,
+		function()
+			Settings.quickPos[id] = udimToTable(btn.Position)
+			saveSoon()
+		end)
 end
 
 ----------------------------------------------------------------------
@@ -2257,9 +2216,7 @@ end
 ----------------------------------------------------------------------
 local function bindToggle(id)
 	local a = Actions[id]
-	local api = createToggle(a.label, false, function(on)
-		setAction(id, on)
-	end)
+	local api = createToggle(a.label, false, function(on) setAction(id, on) end)
 	a.visuals[#a.visuals + 1] = api.Visual
 	return api
 end
@@ -2267,39 +2224,25 @@ end
 local function createBindRow(id)
 	local a = Actions[id]
 	local isToggle = a.kind == "toggle"
-
 	local row = new("Frame", {
-		Name = "Bind_" .. id,
-		Size = UDim2.new(1, 0, 0, 34),
-		BackgroundColor3 = Theme.Element,
-		BorderSizePixel = 0,
-		LayoutOrder = nextOrder(),
-		Parent = content,
+		Name = "Bind_" .. id, Size = UDim2.new(1, 0, 0, 34),
+		BackgroundColor3 = Theme.Element, BorderSizePixel = 0,
+		LayoutOrder = nextOrder(), Parent = content,
 	})
 	corner(row, 6)
 	new("TextLabel", {
 		Position = UDim2.fromOffset(10, 0),
 		Size = UDim2.new(1, isToggle and -160 or -108, 1, 0),
-		BackgroundTransparency = 1,
-		Font = Enum.Font.Gotham,
-		Text = a.label,
-		TextColor3 = Theme.Text,
-		TextSize = 13,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextTruncate = Enum.TextTruncate.AtEnd,
+		BackgroundTransparency = 1, Font = Enum.Font.Gotham,
+		Text = a.label, TextColor3 = Theme.Text, TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
 		Parent = row,
 	})
-
 	local keyBtn = new("TextButton", {
 		Position = UDim2.new(1, isToggle and -148 or -94, 0.5, -12),
-		Size = UDim2.fromOffset(86, 24),
-		BackgroundColor3 = Theme.Track,
-		AutoButtonColor = false,
-		Font = Enum.Font.GothamBold,
-		Text = "",
-		TextColor3 = Theme.Text,
-		TextSize = 11,
-		Parent = row,
+		Size = UDim2.fromOffset(86, 24), BackgroundColor3 = Theme.Track,
+		AutoButtonColor = false, Font = Enum.Font.GothamBold,
+		Text = "", TextColor3 = Theme.Text, TextSize = 11, Parent = row,
 	})
 	corner(keyBtn, 5)
 	keyBtn.MouseButton1Click:Connect(function()
@@ -2309,24 +2252,16 @@ local function createBindRow(id)
 	keyBtn.MouseButton2Click:Connect(function()
 		hotkeys[id] = nil
 		Settings.hotkeys[id] = false
-		if listening == id then
-			listening = nil
-		end
+		if listening == id then listening = nil end
 		refreshAllBinds()
 		saveSoon()
 	end)
 	bindRows[id] = { keyBtn = keyBtn }
-
 	if isToggle then
 		local quickChk = new("TextButton", {
-			Position = UDim2.new(1, -56, 0.5, -12),
-			Size = UDim2.fromOffset(48, 24),
-			AutoButtonColor = false,
-			Font = Enum.Font.GothamBold,
-			Text = "Quick",
-			TextColor3 = Theme.Text,
-			TextSize = 11,
-			Parent = row,
+			Position = UDim2.new(1, -56, 0.5, -12), Size = UDim2.fromOffset(48, 24),
+			AutoButtonColor = false, Font = Enum.Font.GothamBold,
+			Text = "Quick", TextColor3 = Theme.Text, TextSize = 11, Parent = row,
 		})
 		corner(quickChk, 5)
 		local function renderChk()
@@ -2345,10 +2280,8 @@ end
 local function addSwatch(btn, color)
 	local swatch = new("Frame", {
 		Position = UDim2.new(1, -28, 0.5, -8),
-		Size = UDim2.fromOffset(16, 16),
-		BackgroundColor3 = color,
-		BorderSizePixel = 0,
-		Parent = btn,
+		Size = UDim2.fromOffset(16, 16), BackgroundColor3 = color,
+		BorderSizePixel = 0, Parent = btn,
 	})
 	corner(swatch, 4)
 	new("UIStroke", { Color = Color3.new(1, 1, 1), Thickness = 1, Transparency = 0.5, Parent = swatch })
@@ -2356,12 +2289,11 @@ local function addSwatch(btn, color)
 end
 
 ----------------------------------------------------------------------
--- Build the menu
+-- Build the MAIN menu
 ----------------------------------------------------------------------
 -- FLY
 createSection("FLY MODE")
 bindToggle("fly")
--- NEW: Flight style toggle
 local flyStyleBtn
 local function flyStyleLabel()
 	return "Flight Style: " .. (Fly.moveMode == "camera" and "Superman (3D)" or "Plane (H+V)")
@@ -2371,23 +2303,14 @@ flyStyleBtn = createButton(flyStyleLabel(), function()
 	flyStyleBtn.SetText(flyStyleLabel())
 	saveSoon()
 end)
-createToggle("Flight Effects", Fly.effects, function(on)
-	Fly.effects = on
-end)
-createToggle("Fly Noclip (pass through walls)", Fly.noclip, function(on)
-	Fly.noclip = on
-end)
-createSlider("Fly Speed", 10, 300, Fly.speed, function(v)
-	Fly.speed = v
-end)
-createSlider("Vertical Speed", 5, 150, Fly.vspeed, function(v)
-	Fly.vspeed = v
-end)
+createToggle("Flight Effects", Fly.effects, function(on) Fly.effects = on end)
+createToggle("Fly Noclip (pass through walls)", Fly.noclip, function(on) Fly.noclip = on end)
+createSlider("Fly Speed", 10, 300, Fly.speed, function(v) Fly.speed = v end)
+createSlider("Vertical Speed", 5, 150, Fly.vspeed, function(v) Fly.vspeed = v end)
 
 -- MAGNET
 createSection("MAGNET + FORMATION")
 bindToggle("magnet")
--- NEW: Infinite range toggle
 createToggle("Infinite Range (auto-grab new objects)", CONFIG.Magnet.Unlimited, function(on)
 	CONFIG.Magnet.Unlimited = on
 	Magnet.dirty = true
@@ -2397,14 +2320,27 @@ createSlider("Part Count", 1, CONFIG.Magnet.MaxCount, Magnet.count, function(v)
 	Magnet.count = v
 	Magnet.dirty = true
 end)
-createSlider("Formation Radius", 3, 40, Magnet.radius, function(v)
-	Magnet.radius = v
-end)
+createSlider("Formation Radius", 3, 40, Magnet.radius, function(v) Magnet.radius = v end)
 formationBtn = createButton("Formation: " .. Magnet.shapes[Magnet.shape], cycleFormation)
-bindToggle("spin")
-createSlider("Spin Speed", 1, 20, Magnet.spinSpeed, function(v)
-	Magnet.spinSpeed = v
+
+-- NEW: Wall Direction button (only relevant when shape == "Wall", but visible always)
+local wallDirBtn
+local function wallDirLabel()
+	return "Wall Direction: " .. WallDirs[Magnet.wallDir].name
+end
+wallDirBtn = createButton(wallDirLabel(), function()
+	Magnet.wallDir = Magnet.wallDir % #WallDirs + 1
+	wallDirBtn.SetText(wallDirLabel())
+	saveSoon()
 end)
+
+-- NEW: Wall distance slider
+createSlider("Wall Distance", 2, 30, CONFIG.Magnet.WallDistance, function(v)
+	CONFIG.Magnet.WallDistance = v
+end)
+
+bindToggle("spin")
+createSlider("Spin Speed", 1, 20, Magnet.spinSpeed, function(v) Magnet.spinSpeed = v end)
 
 -- PLAYER ESP
 createSection("PLAYER ESP")
@@ -2413,7 +2349,6 @@ createToggle("Show Names", ESP.showNames, function(on)
 	ESP.showNames = on
 	updateESPStyle()
 end)
-
 local fillBtn, fillSwatch
 fillBtn = createButton("Fill Color: " .. ColorPresets[ESP.fillIndex][1], function()
 	ESP.fillIndex = ESP.fillIndex % #ColorPresets + 1
@@ -2422,7 +2357,6 @@ fillBtn = createButton("Fill Color: " .. ColorPresets[ESP.fillIndex][1], functio
 	updateESPStyle()
 end)
 fillSwatch = addSwatch(fillBtn.Button, ColorPresets[ESP.fillIndex][2])
-
 local outlineBtn, outlineSwatch
 outlineBtn = createButton("Outline Color: " .. ColorPresets[ESP.outlineIndex][1], function()
 	ESP.outlineIndex = ESP.outlineIndex % #ColorPresets + 1
@@ -2464,12 +2398,322 @@ createButton("Reset Quick Button Positions", function()
 end)
 
 createSection("HOTKEYS  (click to rebind, right-click to clear)")
-for _, id in ipairs(ActionOrder) do
-	createBindRow(id)
-end
+for _, id in ipairs(ActionOrder) do createBindRow(id) end
 
 createSection("WINDOW")
-createButton("Unload Script", cleanup, Theme.Red)
+createButton("Unload Script", function() env.__MultiToolCleanup() end, Theme.Red)
+
+----------------------------------------------------------------------
+-- SECOND MENU (Advanced)
+----------------------------------------------------------------------
+local advGui = new("ScreenGui", {
+	Name = "MultiToolAdvanced", ResetOnSpawn = false,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling, IgnoreGuiInset = true,
+	DisplayOrder = 998,
+})
+do
+	local ok = pcall(function() advGui.Parent = CoreGui end)
+	if not ok or not advGui.Parent then advGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
+end
+
+local advRoot = new("Frame", {
+	Name = "AdvRoot", Size = UDim2.fromOffset(320, 470),
+	Position = Settings.advWindow and tableToUDim(Settings.advWindow.pos) or UDim2.new(0.5, 180, 0.5, -235),
+	BackgroundColor3 = Theme.Background, BorderSizePixel = 0, Parent = advGui,
+})
+corner(advRoot, 10)
+new("UIStroke", { Color = Theme.Stroke, Thickness = 1, Parent = advRoot })
+
+local advBar = new("Frame", {
+	Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = Theme.TitleBar,
+	BorderSizePixel = 0, Parent = advRoot,
+})
+corner(advBar, 10)
+new("Frame", {
+	Position = UDim2.new(0, 0, 1, -10), Size = UDim2.new(1, 0, 0, 10),
+	BackgroundColor3 = Theme.TitleBar, BorderSizePixel = 0, Parent = advBar,
+})
+new("Frame", {
+	Position = UDim2.new(0, 0, 1, -2), Size = UDim2.new(1, 0, 0, 2),
+	BackgroundColor3 = Color3.fromRGB(255, 90, 90), BorderSizePixel = 0, Parent = advBar,
+})
+new("TextLabel", {
+	Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -50, 1, -2),
+	BackgroundTransparency = 1, Font = Enum.Font.GothamBold,
+	Text = "Multi Tool - Advanced", TextColor3 = Theme.Text, TextSize = 14,
+	TextXAlignment = Enum.TextXAlignment.Left, Parent = advBar,
+})
+
+-- Mini close button for the advanced window
+local advCloseBtn = new("TextButton", {
+	Position = UDim2.new(1, -32, 0.5, -14), Size = UDim2.fromOffset(28, 28),
+	BackgroundColor3 = Theme.Element, AutoButtonColor = false,
+	Font = Enum.Font.GothamBold, Text = "X", TextColor3 = Theme.Text,
+	TextSize = 13, Parent = advBar,
+})
+corner(advCloseBtn, 6)
+
+local advContent = new("ScrollingFrame", {
+	Position = UDim2.new(0, 8, 0, 42), Size = UDim2.new(1, -16, 1, -50),
+	BackgroundTransparency = 1, BorderSizePixel = 0,
+	ScrollBarThickness = 4, ScrollBarImageColor3 = Color3.fromRGB(255, 90, 90),
+	CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+	ScrollingDirection = Enum.ScrollingDirection.Y, Parent = advRoot,
+})
+new("UIListLayout", {
+	Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, Parent = advContent,
+})
+new("UIPadding", {
+	PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 8),
+	PaddingRight = UDim.new(0, 8), Parent = advContent,
+})
+
+local advCounter = 0
+local function advOrder() advCounter += 1 return advCounter end
+
+local function advSection(text)
+	new("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 22), BackgroundTransparency = 1,
+		Font = Enum.Font.GothamBold, Text = text,
+		TextColor3 = Color3.fromRGB(255, 130, 130), TextSize = 12,
+		TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = advOrder(),
+		Parent = advContent,
+	})
+end
+
+local function advLabel(text)
+	local lbl = new("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 22), BackgroundColor3 = Theme.Element,
+		BorderSizePixel = 0, Font = Enum.Font.Gotham, Text = text,
+		TextColor3 = Theme.Text, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left,
+		LayoutOrder = advOrder(), Parent = advContent,
+	})
+	corner(lbl, 6)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 8), Parent = lbl })
+	return lbl
+end
+
+local function advToggle(text, default, callback)
+	local btn = new("TextButton", {
+		Size = UDim2.new(1, 0, 0, 32), BackgroundColor3 = Theme.Element,
+		AutoButtonColor = false, Font = Enum.Font.GothamBold, Text = "",
+		TextColor3 = Theme.Text, TextSize = 13, LayoutOrder = advOrder(), Parent = advContent,
+	})
+	corner(btn, 6)
+	local state = default and true or false
+	local api = {}
+	local function render()
+		local base = state and Theme.Red or Theme.Element
+		btn.BackgroundColor3 = base
+		btn.Text = text .. (state and "   [ON]" or "   [OFF]")
+	end
+	function api.Set(v) state = v and true or false render() callback(state) end
+	function api.Visual(v) state = v and true or false render() end
+	function api.Get() return state end
+	btn.MouseButton1Click:Connect(function() api.Set(not state) end)
+	render()
+	if state then callback(state) end
+	return api
+end
+
+local function advButton(text, callback, color)
+	color = color or Color3.fromRGB(255, 90, 90)
+	local btn = new("TextButton", {
+		Size = UDim2.new(1, 0, 0, 32), BackgroundColor3 = color,
+		AutoButtonColor = false, Font = Enum.Font.GothamBold, Text = text,
+		TextColor3 = Theme.Text, TextSize = 13, LayoutOrder = advOrder(), Parent = advContent,
+	})
+	corner(btn, 6)
+	btn.MouseButton1Click:Connect(callback)
+	return { Button = btn, SetText = function(t) btn.Text = t end }
+end
+
+-- Drag advanced window
+do
+	local dragging, dragStart, startPos = false, nil, nil
+	advBar.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			startPos = advRoot.Position
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					dragging = false
+					Settings.advWindow = { pos = udimToTable(advRoot.Position) }
+					saveSoon()
+				end
+			end)
+		end
+	end)
+	track(UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch) then
+			local d = input.Position - dragStart
+			advRoot.Position = UDim2.new(
+				startPos.X.Scale, startPos.X.Offset + d.X,
+				startPos.Y.Scale, startPos.Y.Offset + d.Y
+			)
+		end
+	end))
+end
+
+local advOpen = true
+local function setAdvOpen(open)
+	advOpen = open
+	advRoot.Visible = open
+end
+advCloseBtn.MouseButton1Click:Connect(function() setAdvOpen(false) end)
+
+-- Register action to toggle the advanced window
+registerAction("toggleAdvMenu", {
+	label = "Show / Hide Advanced Menu", kind = "trigger",
+	run = function() setAdvOpen(not advOpen) end,
+})
+
+----------------------------------------------------------------------
+-- Populate second menu
+----------------------------------------------------------------------
+advSection("TARGET ESP")
+local targetStatus = advLabel("Target: none")
+
+local function beginPickPlayer(onPicked)
+	local conn
+	conn = UserInputService.InputBegan:Connect(function(input, processed)
+		if processed then return end
+		if input.UserInputType ~= Enum.UserInputType.MouseButton1
+			and input.UserInputType ~= Enum.UserInputType.Touch then return end
+		if UserInputService:GetFocusedTextBox() then return end
+		conn:Disconnect()
+		local pos = input.Position
+		task.defer(function()
+			local hit = screenRay(Vector2.new(pos.X, pos.Y))
+			if hit then
+				local plr = getPlayerFromPart(hit.Instance)
+				if plr and plr ~= LocalPlayer then onPicked(plr) else onPicked(nil) end
+			else
+				onPicked(nil)
+			end
+		end)
+	end)
+end
+
+advButton("Pick Target (click a player next)", function()
+	targetStatus.Text = "Click on a player..."
+	beginPickPlayer(function(plr)
+		if plr then
+			setTarget(plr)
+			targetStatus.Text = "Target: " .. plr.DisplayName
+		else
+			targetStatus.Text = "Target: (not a player)"
+		end
+	end)
+end)
+advButton("Clear Target", function()
+	setTarget(nil)
+	targetStatus.Text = "Target: none"
+end)
+advToggle("Show Target ESP", true, function(on)
+	Target.show = on
+	if on then applyTargetVisuals() else clearTargetVisuals() end
+end)
+
+advSection("REDIRECT (magnet destination)")
+local redirectStatus = advLabel("Mode: self")
+advButton("Redirect -> Self", function()
+	Redirect.mode = "self"
+	Redirect.point = nil
+	Magnet.dirty = true
+	redirectStatus.Text = "Mode: self"
+end)
+advButton("Redirect -> Target Player", function()
+	if not Target.player then
+		redirectStatus.Text = "No target selected"
+		return
+	end
+	Redirect.mode = "target"
+	Magnet.dirty = true
+	redirectStatus.Text = "Mode: target (" .. Target.player.DisplayName .. ")"
+end)
+advButton("Redirect -> Point (click next)", function()
+	redirectStatus.Text = "Click destination point..."
+	local conn
+	conn = UserInputService.InputBegan:Connect(function(input, processed)
+		if processed then return end
+		if input.UserInputType ~= Enum.UserInputType.MouseButton1
+			and input.UserInputType ~= Enum.UserInputType.Touch then return end
+		if UserInputService:GetFocusedTextBox() then return end
+		conn:Disconnect()
+		local pos = input.Position
+		task.defer(function()
+			local hit = screenRay(Vector2.new(pos.X, pos.Y))
+			if hit then
+				Redirect.mode = "point"
+				Redirect.point = hit.Position
+				Magnet.dirty = true
+				redirectStatus.Text = string.format("Mode: point (%.0f, %.0f, %.0f)",
+					hit.Position.X, hit.Position.Y, hit.Position.Z)
+			end
+		end)
+	end)
+end)
+advButton("Redirect -> Reset", function()
+	Redirect.mode = "self"
+	Redirect.point = nil
+	Magnet.dirty = true
+	redirectStatus.Text = "Mode: self"
+end)
+
+advSection("WALL-IN (trap target)")
+local wallStatus = advLabel("Wall-in: OFF")
+local wallToggle
+wallToggle = advToggle("Wall-In Target", false, function(on)
+	if on then
+		if not Target.player then
+			wallStatus.Text = "Wall-in: no target"
+			wallToggle.Visual(false)
+			return
+		end
+		local ok = setWall(true)
+		wallStatus.Text = ok and "Wall-in: ON" or "Wall-in: no target"
+	else
+		setWall(false)
+		wallStatus.Text = "Wall-in: OFF"
+	end
+end)
+advButton("Release Wall", function()
+	setWall(false)
+	wallToggle.Visual(false)
+	wallStatus.Text = "Wall-in: OFF"
+end)
+
+advSection("THROW OBJECT")
+local throwLabel = advLabel("Throw: idle")
+throwUiState.label = throwLabel
+advButton("Pick & Throw (click object, then destination)", function()
+	startPick()
+end)
+advButton("Throw Selected at Target", function()
+	if not Throw.part or not Throw.part.Parent then
+		throwLabel.Text = "No object selected"
+		return
+	end
+	if not Target.player or not Target.player.Character then
+		throwLabel.Text = "No target selected"
+		return
+	end
+	local thrp = Target.player.Character:FindFirstChild("HumanoidRootPart")
+	if thrp then
+		doThrow(Throw.part, thrp.Position)
+		cancelThrow()
+	end
+end)
+advButton("Cancel Throw", function()
+	cancelThrow()
+end)
+
+advSection("SHORTCUTS")
+advButton("Toggle Advanced Menu (bound hotkey or L)", function() setAdvOpen(not advOpen) end)
 
 ----------------------------------------------------------------------
 -- Final state sync
@@ -2482,12 +2726,8 @@ updateQuickVisibility()
 
 if Settings.window then
 	root.Position = tableToUDim(Settings.window.pos)
-	if Settings.window.pinned then
-		setPinned(true)
-	end
-	if Settings.window.collapsed then
-		setCollapsed(true, true)
-	end
+	if Settings.window.pinned then setPinned(true) end
+	if Settings.window.collapsed then setCollapsed(true, true) end
 	task.defer(function()
 		local vs = gui.AbsoluteSize
 		local p = root.AbsolutePosition
@@ -2500,4 +2740,37 @@ if Settings.window then
 	end)
 end
 
-print("[MultiTool] Loaded successfully - Fly | Magnet | Player ESP | Object ESP | Quick buttons + hotkeys ready")
+----------------------------------------------------------------------
+-- Cleanup
+----------------------------------------------------------------------
+local function cleanup()
+	pcall(saveSettings)
+	Fly.enabled = false
+	stopFly()
+	setMagnet(false)
+	setObjectESP(false)
+	pcall(function() setWall(false) end)
+	pcall(function() setTarget(nil) end)
+	pcall(function() cancelThrow() end)
+
+	ESP.enabled = false
+	for plr in pairs(ESP.objects) do clearESP(plr) end
+	for plr in pairs(ESP.hooks) do unhookPlayer(plr) end
+
+	for _, c in ipairs(connections) do c:Disconnect() end
+	connections = {}
+
+	local cam = Workspace.CurrentCamera
+	local fx = cam and cam:FindFirstChild("MT_FX")
+	if fx then fx:Destroy() end
+	if objFolder then objFolder:Destroy() end
+	if espFolder then espFolder:Destroy() end
+	if advFolder then advFolder:Destroy() end
+	if advGui then advGui:Destroy() end
+	if gui then gui:Destroy() end
+	env.__MultiToolCleanup = nil
+end
+
+env.__MultiToolCleanup = cleanup
+
+print("[MultiTool] Loaded - Fly | Magnet (Wall) | ESP | Target | Wall-In | Throw | Advanced window ready")
