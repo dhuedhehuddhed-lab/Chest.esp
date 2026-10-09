@@ -1,0 +1,669 @@
+-- == Multi Cheat: Fly + Magnet + Formation + Chest ESP ==
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+
+-- === НАСТРОЙКИ ===
+local ESP_CONFIG = {
+    Enabled = false,
+    FillColor = Color3.fromRGB(255, 215, 0),
+    OutlineColor = Color3.fromRGB(255, 255, 255),
+    FillTransparency = 0.5,
+    OutlineTransparency = 0.2,
+    ChestNames = {"Chest", "Crate", "Loot", "Treasure", "Box", "Reward", "Сундук"}
+}
+
+local FLY_CONFIG = {
+    Enabled = false,
+    Speed = 50,
+    LiftSpeed = 25
+}
+
+local MAGNET_CONFIG = {
+    Enabled = false,
+    Count = 30,           -- сколько предметов притянуть
+    Radius = 8,           -- радиус формации вокруг игрока
+    Shape = "Circle",     -- Circle / Sphere / Cube / Helix
+    Spin = false,         -- вращать формацию
+    SpinSpeed = 2         -- скорость вращения
+}
+
+local SHAPES = {"Circle", "Sphere", "Cube", "Helix"}
+local SHAPE_INDEX = 1
+
+-- === УДАЛЯЕМ СТАРОЕ ОКНО ===
+if CoreGui:FindFirstChild("MyCoolGui") then
+    CoreGui.MyCoolGui:Destroy()
+end
+
+-- === СОЗДАНИЕ GUI ===
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "MyCoolGui"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+local parentOk = pcall(function() ScreenGui.Parent = CoreGui end)
+if not parentOk then
+    ScreenGui.Parent = player:WaitForChild("PlayerGui")
+end
+
+-- Основное окно
+local Main = Instance.new("Frame")
+Main.Name = "Main"
+Main.Size = UDim2.new(0, 340, 0, 500)
+Main.Position = UDim2.new(0.5, -170, 0.5, -250)
+Main.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+Main.BorderSizePixel = 0
+Main.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 10)
+MainCorner.Parent = Main
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = Color3.fromRGB(60, 60, 70)
+MainStroke.Thickness = 1
+MainStroke.Parent = Main
+
+-- Тень
+local Shadow = Instance.new("ImageLabel")
+Shadow.AnchorPoint = Vector2.new(0.5, 0.5)
+Shadow.Position = UDim2.new(0.5, 0, 0.5, 0)
+Shadow.Size = UDim2.new(1, 40, 1, 40)
+Shadow.BackgroundTransparency = 1
+Shadow.Image = "rbxassetid://6014261993"
+Shadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
+Shadow.ImageTransparency = 0.5
+Shadow.ScaleType = Enum.ScaleType.Slice
+Shadow.SliceCenter = Rect.new(49, 49, 450, 450)
+Shadow.ZIndex = -1
+Shadow.Parent = Main
+
+-- Заголовок
+local TitleBar = Instance.new("Frame")
+TitleBar.Name = "TitleBar"
+TitleBar.Size = UDim2.new(1, 0, 0, 40)
+TitleBar.BackgroundColor3 = Color3.fromRGB(32, 32, 38)
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = Main
+
+local TitleCorner = Instance.new("UICorner")
+TitleCorner.CornerRadius = UDim.new(0, 10)
+TitleCorner.Parent = TitleBar
+
+local TitleFix = Instance.new("Frame")
+TitleFix.Size = UDim2.new(1, 0, 0, 10)
+TitleFix.Position = UDim2.new(0, 0, 1, -10)
+TitleFix.BackgroundColor3 = Color3.fromRGB(32, 32, 38)
+TitleFix.BorderSizePixel = 0
+TitleFix.Parent = TitleBar
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -50, 1, 0)
+Title.Position = UDim2.new(0, 15, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "⚡ Multi Cheat v3"
+Title.TextColor3 = Color3.fromRGB(240, 240, 245)
+Title.TextSize = 16
+Title.Font = Enum.Font.GothamBold
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = TitleBar
+
+-- Кнопка закрытия
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 30, 0, 30)
+CloseBtn.Position = UDim2.new(1, -38, 0, 5)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+CloseBtn.Text = "✕"
+CloseBtn.TextColor3 = Color3.fromRGB(240, 240, 245)
+CloseBtn.TextSize = 14
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.BorderSizePixel = 0
+CloseBtn.AutoButtonColor = false
+CloseBtn.Parent = TitleBar
+
+local CloseCorner = Instance.new("UICorner")
+CloseCorner.CornerRadius = UDim.new(0, 6)
+CloseCorner.Parent = CloseBtn
+
+CloseBtn.MouseEnter:Connect(function()
+    CloseBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+end)
+CloseBtn.MouseLeave:Connect(function()
+    CloseBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+end)
+CloseBtn.MouseButton1Click:Connect(function()
+    ScreenGui:Destroy()
+    ESP_CONFIG.Enabled = false
+    FLY_CONFIG.Enabled = false
+    MAGNET_CONFIG.Enabled = false
+    releaseAllParts()
+end)
+
+-- Скроллящийся контейнер
+local Content = Instance.new("ScrollingFrame")
+Content.Size = UDim2.new(1, -20, 1, -55)
+Content.Position = UDim2.new(0, 10, 0, 48)
+Content.BackgroundTransparency = 1
+Content.BorderSizePixel = 0
+Content.ScrollBarThickness = 4
+Content.ScrollBarImageColor3 = Color3.fromRGB(88, 101, 242)
+Content.CanvasSize = UDim2.new(0, 0, 0, 900)
+Content.Parent = Main
+
+local ContentLayout = Instance.new("UIListLayout")
+ContentLayout.Padding = UDim.new(0, 8)
+ContentLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ContentLayout.Parent = Content
+
+-- === ХЕЛПЕРЫ ДЛЯ UI ===
+local function makeSectionTitle(text)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, 0, 0, 24)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = "— " .. text .. " —"
+    lbl.TextColor3 = Color3.fromRGB(150, 150, 160)
+    lbl.TextSize = 12
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = Content
+    return lbl
+end
+
+local function makeButton(text, color)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 36)
+    btn.BackgroundColor3 = color or Color3.fromRGB(88, 101, 242)
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.TextSize = 14
+    btn.Font = Enum.Font.GothamBold
+    btn.BorderSizePixel = 0
+    btn.AutoButtonColor = false
+    btn.Parent = Content
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 8)
+    c.Parent = btn
+    return btn
+end
+
+local function makeLabel(text)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, 0, 0, 20)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.TextColor3 = Color3.fromRGB(200, 200, 210)
+    lbl.TextSize = 13
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = Content
+    return lbl
+end
+
+local function makeSlider(labelText, minVal, maxVal, defaultVal, callback)
+    local container = Instance.new("Frame")
+    container.Size = UDim2.new(1, 0, 0, 40)
+    container.BackgroundTransparency = 1
+    container.Parent = Content
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, 0, 0, 18)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = labelText .. ": " .. defaultVal
+    lbl.TextColor3 = Color3.fromRGB(200, 200, 210)
+    lbl.TextSize = 13
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = container
+
+    local bar = Instance.new("Frame")
+    bar.Size = UDim2.new(1, 0, 0, 6)
+    bar.Position = UDim2.new(0, 0, 0, 26)
+    bar.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+    bar.BorderSizePixel = 0
+    bar.Parent = container
+    local bc = Instance.new("UICorner")
+    bc.CornerRadius = UDim.new(1, 0)
+    bc.Parent = bar
+
+    local fill = Instance.new("Frame")
+    local startRatio = (defaultVal - minVal) / (maxVal - minVal)
+    fill.Size = UDim2.new(startRatio, 0, 1, 0)
+    fill.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
+    fill.BorderSizePixel = 0
+    fill.Parent = bar
+    local fc = Instance.new("UICorner")
+    fc.CornerRadius = UDim.new(1, 0)
+    fc.Parent = fill
+
+    local knob = Instance.new("TextButton")
+    knob.Size = UDim2.new(0, 16, 0, 16)
+    knob.Position = UDim2.new(startRatio, -8, 0.5, -8)
+    knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    knob.Text = ""
+    knob.BorderSizePixel = 0
+    knob.Parent = bar
+    local kc = Instance.new("UICorner")
+    kc.CornerRadius = UDim.new(1, 0)
+    kc.Parent = knob
+
+    local dragging = false
+    local function update(input)
+        local relX = math.clamp((input.Position.X - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
+        fill.Size = UDim2.new(relX, 0, 1, 0)
+        knob.Position = UDim2.new(relX, -8, 0.5, -8)
+        local val = math.floor(minVal + relX * (maxVal - minVal))
+        lbl.Text = labelText .. ": " .. val
+        callback(val)
+    end
+
+    knob.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+        end
+    end)
+    bar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            update(input)
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            update(input)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+
+    return container
+end
+
+-- === UI: FLY ===
+makeSectionTitle("✈ FLY")
+local FlyBtn = makeButton("Включить полёт", Color3.fromRGB(88, 101, 242))
+makeSlider("Скорость полёта", 10, 300, FLY_CONFIG.Speed, function(v)
+    FLY_CONFIG.Speed = v
+end)
+makeSlider("Скорость вверх/вниз", 5, 150, FLY_CONFIG.LiftSpeed, function(v)
+    FLY_CONFIG.LiftSpeed = v
+end)
+
+-- === UI: MAGNET ===
+makeSectionTitle("🌀 MAGNET + FORMATION")
+local MagnetBtn = makeButton("Включить магнит", Color3.fromRGB(88, 101, 242))
+makeSlider("Кол-во предметов", 1, 150, MAGNET_CONFIG.Count, function(v)
+    MAGNET_CONFIG.Count = v
+end)
+makeSlider("Радиус формации", 3, 40, MAGNET_CONFIG.Radius, function(v)
+    MAGNET_CONFIG.Radius = v
+end)
+
+-- Кнопка выбора формы
+local ShapeBtn = makeButton("Форма: Circle", Color3.fromRGB(50, 50, 58))
+ShapeBtn.MouseButton1Click:Connect(function()
+    SHAPE_INDEX = SHAPE_INDEX + 1
+    if SHAPE_INDEX > #SHAPES then SHAPE_INDEX = 1 end
+    MAGNET_CONFIG.Shape = SHAPES[SHAPE_INDEX]
+    ShapeBtn.Text = "Форма: " .. MAGNET_CONFIG.Shape
+end)
+
+-- Кнопка вращения
+local SpinBtn = makeButton("Вращение: ВЫКЛ", Color3.fromRGB(50, 50, 58))
+SpinBtn.MouseButton1Click:Connect(function()
+    MAGNET_CONFIG.Spin = not MAGNET_CONFIG.Spin
+    SpinBtn.Text = "Вращение: " .. (MAGNET_CONFIG.Spin and "ВКЛ" or "ВЫКЛ")
+    SpinBtn.BackgroundColor3 = MAGNET_CONFIG.Spin and Color3.fromRGB(80, 180, 100) or Color3.fromRGB(50, 50, 58)
+end)
+
+makeSlider("Скорость вращения", 1, 20, MAGNET_CONFIG.SpinSpeed, function(v)
+    MAGNET_CONFIG.SpinSpeed = v
+end)
+
+-- === UI: ESP ===
+makeSectionTitle("🥇 CHEST ESP")
+local EspBtn = makeButton("Включить Chest ESP", Color3.fromRGB(88, 101, 242))
+
+-- === ЛОГИКА ESP ===
+local activeHighlights = {}
+
+local function clearAllHighlights()
+    for _, h in pairs(activeHighlights) do
+        if h and h.Parent then h:Destroy() end
+    end
+    activeHighlights = {}
+end
+
+local function createHighlight(obj)
+    if not obj or not obj.Parent then return end
+    if activeHighlights[obj] and activeHighlights[obj].Parent then return end
+    local h = Instance.new("Highlight")
+    h.Adornee = obj
+    h.FillColor = ESP_CONFIG.FillColor
+    h.OutlineColor = ESP_CONFIG.OutlineColor
+    h.FillTransparency = ESP_CONFIG.FillTransparency
+    h.OutlineTransparency = ESP_CONFIG.OutlineTransparency
+    h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    h.Parent = obj
+    activeHighlights[obj] = h
+end
+
+local function scanForChests()
+    if not ESP_CONFIG.Enabled then return end
+    for _, obj in pairs(Workspace:GetDescendants()) do
+        if obj:IsA("BasePart") or obj:IsA("Model") then
+            for _, namePattern in ipairs(ESP_CONFIG.ChestNames) do
+                if string.find(string.lower(obj.Name), string.lower(namePattern)) then
+                    createHighlight(obj)
+                    break
+                end
+            end
+        end
+    end
+end
+
+task.spawn(function()
+    while task.wait(1) do
+        if ESP_CONFIG.Enabled then scanForChests() end
+    end
+end)
+
+-- === ЛОГИКА FLY ===
+local flyConn, flyBV, flyBG
+
+local function stopFly()
+    if flyConn then flyConn:Disconnect(); flyConn = nil end
+    if flyBV then flyBV:Destroy(); flyBV = nil end
+    if flyBG then flyBG:Destroy(); flyBG = nil end
+end
+
+local function startFly()
+    local char = player.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return end
+
+    hum.PlatformStand = true
+
+    flyBV = Instance.new("BodyVelocity")
+    flyBV.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    flyBV.Velocity = Vector3.zero
+    flyBV.Parent = hrp
+
+    flyBG = Instance.new("BodyGyro")
+    flyBG.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+    flyBG.CFrame = hrp.CFrame
+    flyBG.P = 10000
+    flyBG.D = 500
+    flyBG.Parent = hrp
+
+    flyConn = RunService.RenderStepped:Connect(function()
+        if not FLY_CONFIG.Enabled then return end
+        local cam = Workspace.CurrentCamera
+        if not cam then return end
+        local dir = Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir = dir + cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir = dir - cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir = dir - cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir = dir + cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.new(0, FLY_CONFIG.LiftSpeed / FLY_CONFIG.Speed, 0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then dir = dir - Vector3.new(0, FLY_CONFIG.LiftSpeed / FLY_CONFIG.Speed, 0) end
+
+        if dir.Magnitude > 0 then
+            flyBV.Velocity = dir.Unit * FLY_CONFIG.Speed
+        else
+            flyBV.Velocity = Vector3.zero
+        end
+        flyBG.CFrame = cam.CFrame
+    end)
+end
+
+-- === ЛОГИКА MAGNET + FORMATION ===
+local capturedParts = {}   -- [part] = {bp=, bg=, idx=}
+local magnetConn
+
+local function isPartOfAnyCharacter(part)
+    for _, plr in pairs(Players:GetPlayers()) do
+        if plr.Character and part:IsDescendantOf(plr.Character) then
+            return true
+        end
+    end
+    return false
+end
+
+local function releasePart(part)
+    local data = capturedParts[part]
+    if not data then return end
+    if data.bp then data.bp:Destroy() end
+    if data.bg then data.bg:Destroy() end
+    capturedParts[part] = nil
+end
+
+local function releaseAllParts()
+    for part, _ in pairs(capturedParts) do
+        releasePart(part)
+    end
+    capturedParts = {}
+end
+
+local function capturePart(part, idx)
+    if capturedParts[part] then return end
+    part.CanCollide = false
+
+    local bp = Instance.new("BodyPosition")
+    bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    bp.P = 50000
+    bp.D = 800
+    bp.Position = part.Position
+    bp.Parent = part
+
+    local bg = Instance.new("BodyGyro")
+    bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+    bg.P = 10000
+    bg.D = 500
+    bg.CFrame = part.CFrame
+    bg.Parent = part
+
+    capturedParts[part] = {bp = bp, bg = bg, idx = idx}
+end
+
+local function findUnanchoredParts()
+    local list = {}
+    for _, obj in pairs(Workspace:GetDescendants()) do
+        if obj:IsA("BasePart") and not obj.Anchored then
+            if not isPartOfAnyCharacter(obj) then
+                table.insert(list, obj)
+            end
+            if #list >= MAGNET_CONFIG.Count then break end
+        end
+    end
+    return list
+end
+
+-- Вычисление точки формации по индексу
+local function getFormationOffset(idx, total, shape, R, timeOffset)
+    total = math.max(total, 1)
+    local ratio = (idx - 1) / total
+    local angle = ratio * math.pi * 2
+
+    if shape == "Circle" then
+        return Vector3.new(math.cos(angle) * R, 0, math.sin(angle) * R)
+
+    elseif shape == "Sphere" then
+        -- равномерное распределение (спираль Фибоначчи)
+        local i = idx
+        local phi = math.acos(1 - 2 * (i + 0.5) / total)
+        local theta = math.pi * (1 + 5 ^ 0.5) * (i + 0.5)
+        return Vector3.new(
+            math.sin(phi) * math.cos(theta) * R,
+            math.cos(phi) * R,
+            math.sin(phi) * math.sin(theta) * R
+        )
+
+    elseif shape == "Cube" then
+        -- распределяем по 6 граням куба
+        local perFace = math.max(math.ceil(total / 6), 1)
+        local face = math.floor((idx - 1) / perFace) % 6
+        local localIdx = (idx - 1) % perFace
+        local u = (localIdx / math.max(perFace - 1, 1)) - 0.5
+        local v = ((idx * 7) % 100) / 100 - 0.5
+        local half = R
+
+        if face == 0 then return Vector3.new( half, u * R * 2, v * R * 2) end
+        if face == 1 then return Vector3.new(-half, u * R * 2, v * R * 2) end
+        if face == 2 then return Vector3.new(u * R * 2,  half, v * R * 2) end
+        if face == 3 then return Vector3.new(u * R * 2, -half, v * R * 2) end
+        if face == 4 then return Vector3.new(u * R * 2, v * R * 2,  half) end
+        return Vector3.new(u * R * 2, v * R * 2, -half)
+
+    elseif shape == "Helix" then
+        -- спираль по вертикали
+        local height = R * 3
+        local y = -height / 2 + ratio * height
+        local a = ratio * math.pi * 6
+        return Vector3.new(math.cos(a) * R * 0.7, y, math.sin(a) * R * 0.7)
+    end
+
+    return Vector3.zero
+end
+
+local function startMagnet()
+    magnetConn = RunService.RenderStepped:Connect(function()
+        if not MAGNET_CONFIG.Enabled then return end
+        local char = player.Character
+        if not char then return end
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+
+        -- чистим мёртвые ссылки
+        for part, _ in pairs(capturedParts) do
+            if not part or not part.Parent then
+                releasePart(part)
+            end
+        end
+
+        -- добираем новые, если не хватает
+        local currentCount = 0
+        for _ in pairs(capturedParts) do currentCount = currentCount + 1 end
+
+        if currentCount < MAGNET_CONFIG.Count then
+            local candidates = findUnanchoredParts()
+            local added = 0
+            for _, part in ipairs(candidates) do
+                if not capturedParts[part] then
+                    capturePart(part, currentCount + added + 1)
+                    added = added + 1
+                    if currentCount + added >= MAGNET_CONFIG.Count then break end
+                end
+            end
+        end
+
+        -- обновляем позиции
+        local total = 0
+        for _ in pairs(capturedParts) do total = total + 1 end
+
+        local t = tick()
+        for part, data in pairs(capturedParts) do
+            if data.bp and data.bp.Parent then
+                local offset = getFormationOffset(data.idx, total, MAGNET_CONFIG.Shape, MAGNET_CONFIG.Radius, t)
+                data.bp.Position = hrp.Position + offset
+            end
+
+            if data.bg and data.bg.Parent then
+                if MAGNET_CONFIG.Spin then
+                    local angle = t * MAGNET_CONFIG.SpinSpeed
+                    data.bg.CFrame = CFrame.new(part.Position) * CFrame.Angles(angle, angle * 0.7, angle * 0.4)
+                else
+                    data.bg.CFrame = CFrame.new(part.Position) * part.CFrame.Rotation
+                end
+            end
+        end
+    end)
+end
+
+local function stopMagnet()
+    if magnetConn then magnetConn:Disconnect(); magnetConn = nil end
+    releaseAllParts()
+end
+
+-- === ОБРАБОТКА КНОПОК ===
+FlyBtn.MouseButton1Click:Connect(function()
+    FLY_CONFIG.Enabled = not FLY_CONFIG.Enabled
+    if FLY_CONFIG.Enabled then
+        FlyBtn.Text = "Выключить полёт"
+        FlyBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+        startFly()
+    else
+        FlyBtn.Text = "Включить полёт"
+        FlyBtn.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
+        stopFly()
+        local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+        if hum then hum.PlatformStand = false end
+    end
+end)
+
+MagnetBtn.MouseButton1Click:Connect(function()
+    MAGNET_CONFIG.Enabled = not MAGNET_CONFIG.Enabled
+    if MAGNET_CONFIG.Enabled then
+        MagnetBtn.Text = "Выключить магнит"
+        MagnetBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+        startMagnet()
+    else
+        MagnetBtn.Text = "Включить магнит"
+        MagnetBtn.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
+        stopMagnet()
+    end
+end)
+
+EspBtn.MouseButton1Click:Connect(function()
+    ESP_CONFIG.Enabled = not ESP_CONFIG.Enabled
+    if ESP_CONFIG.Enabled then
+        EspBtn.Text = "Выключить Chest ESP"
+        EspBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+        scanForChests()
+    else
+        EspBtn.Text = "Включить Chest ESP"
+        EspBtn.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
+        clearAllHighlights()
+    end
+end)
+
+-- === ПЕРЕТАСКИВАНИЕ ===
+local dragging = false
+local dragStart, startPos
+
+local function updateDrag(input)
+    local delta = input.Position - dragStart
+    Main.Position = UDim2.new(
+        startPos.X.Scale, startPos.X.Offset + delta.X,
+        startPos.Y.Scale, startPos.Y.Offset + delta.Y
+    )
+end
+
+TitleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = Main.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        updateDrag(input)
+    end
+end)
+
+print("✅ Multi Cheat v3 загружен! Fly + Magnet + Formation + ESP")
