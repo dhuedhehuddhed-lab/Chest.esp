@@ -1,46 +1,140 @@
-local HttpService = game:GetService("HttpService")
-local TeleportService = game:GetService("TeleportService")
+--// AimAssist с меню, кольцом радиуса и настройкой скорости
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
-local function findAndJoinEmptyServer()
-    local player = Players.LocalPlayer
-    local placeId = game.PlaceId
-    local currentJobId = game.JobId
-    
-    -- Используем прокси roproxy.com, так как прямой доступ к roblox.com заблокирован
-    local url = string.format(
-        "https://games.roproxy.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100",
-        placeId
-    )
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
 
-    local success, response = pcall(function()
-        return HttpService:JSONDecode(game:HttpGet(url))
-    end)
+--// Настройки по умолчанию
+local settings = {
+	Enabled = false,
+	Radius = 150,      -- радиус кольца в пикселях
+	Speed = 10,        -- скорость наведения (больше = быстрее)
+	WallCheck = true,  -- не целиться через стены
+	TeamCheck = true,  -- не целиться в союзников
+	AimPart = "Head",
+}
 
-    if not success or not response or not response.data then
-        warn("Не удалось получить список серверов")
-        return false
-    end
+local TOGGLE_KEY = Enum.KeyCode.Q          -- вкл/выкл аим
+local MENU_KEY = Enum.KeyCode.RightShift   -- показать/скрыть меню
 
-    local targetServer = nil
-    for _, server in ipairs(response.data) do
-        -- Ищем сервер с 0 или 1 игроком, кроме текущего
-        if server.playing <= 1 and server.id ~= currentJobId then
-            targetServer = server
-            break
-        end
-    end
+--// ========== GUI ==========
+local gui = Instance.new("ScreenGui")
+gui.Name = "AimAssistGui"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.Parent = player:WaitForChild("PlayerGui")
 
-    if targetServer then
-        print(string.format("Найден сервер: %s (игроков: %d)", targetServer.id, targetServer.playing))
-        -- Телепортируемся на найденный сервер
-        TeleportService:TeleportToPlaceInstance(placeId, targetServer.id, player)
-        return true
-    else
-        warn("Сервер с низким онлайном не найден. Попробуй ещё раз.")
-        return false
-    end
+-- Кольцо радиуса (по центру экрана)
+local ring = Instance.new("Frame")
+ring.AnchorPoint = Vector2.new(0.5, 0.5)
+ring.Position = UDim2.fromScale(0.5, 0.5)
+ring.BackgroundTransparency = 1
+ring.Visible = false
+ring.Parent = gui
+
+local ringCorner = Instance.new("UICorner")
+ringCorner.CornerRadius = UDim.new(1, 0)
+ringCorner.Parent = ring
+
+local ringStroke = Instance.new("UIStroke")
+ringStroke.Color = Color3.fromRGB(255, 255, 255)
+ringStroke.Thickness = 2
+ringStroke.Parent = ring
+
+local function updateRing()
+	ring.Size = UDim2.fromOffset(settings.Radius * 2, settings.Radius * 2)
+	ring.Visible = settings.Enabled
 end
 
--- Пример вызова функции (можно привязать к кнопке в меню)
-findAndJoinEmptyServer()
+-- Главное окно
+local main = Instance.new("Frame")
+main.Name = "Main"
+main.Size = UDim2.fromOffset(250, 215)
+main.Position = UDim2.new(0, 20, 0.5, -107)
+main.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+main.BorderSizePixel = 0
+main.Parent = gui
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 8)
+
+-- Заголовок (за него двигаем окно)
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 30)
+titleBar.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+titleBar.BorderSizePixel = 0
+titleBar.Parent = main
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 8)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -40, 1, 0)
+title.Position = UDim2.fromOffset(10, 0)
+title.BackgroundTransparency = 1
+title.Text = "Aim Assist"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Font = Enum.Font.GothamBold
+title.TextSize = 14
+title.Parent = titleBar
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.fromOffset(24, 24)
+closeBtn.Position = UDim2.new(1, -28, 0, 3)
+closeBtn.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
+closeBtn.Text = "X"
+closeBtn.TextColor3 = Color3.new(1, 1, 1)
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 12
+closeBtn.Parent = titleBar
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+
+-- Маленькая кнопка для открытия меню (всегда на экране)
+local openBtn = Instance.new("TextButton")
+openBtn.Size = UDim2.fromOffset(70, 28)
+openBtn.Position = UDim2.fromOffset(10, 10)
+openBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+openBtn.Text = "Aim Menu"
+openBtn.TextColor3 = Color3.new(1, 1, 1)
+openBtn.Font = Enum.Font.GothamBold
+openBtn.TextSize = 12
+openBtn.Visible = false
+openBtn.Parent = gui
+Instance.new("UICorner", openBtn).CornerRadius = UDim.new(0, 6)
+
+local function setMenuVisible(v)
+	main.Visible = v
+	openBtn.Visible = not v
+end
+
+closeBtn.MouseButton1Click:Connect(function() setMenuVisible(false) end)
+openBtn.MouseButton1Click:Connect(function() setMenuVisible(true) end)
+
+-- Перетаскивание окна
+do
+	local dragging, dragStart, startPos
+	titleBar.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			startPos = main.Position
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					dragging = false
+				end
+			end)
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch) then
+			local delta = input.Position - dragStart
+			main.Position = UDim2.new(
+				startPos.X.Scale, startPos.X.Offset + delta.X,
+				startPos.Y.Scale, startPos.Y.Offset + delta.Y
+			)
+		end
+	end)
+end
+
+--
